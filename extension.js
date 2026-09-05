@@ -11,7 +11,7 @@ const WorkspaceManager = global.get_workspace_manager();
 import {
   initLogging,
   createLogger,
-} from './logger.js';
+  } from './logger.js';
 
 const journal = createLogger(import.meta.url);
 
