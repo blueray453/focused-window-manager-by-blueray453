@@ -9,13 +9,13 @@ const Display = global.get_display();
 const WindowManager = global.get_window_manager();
 const WorkspaceManager = global.get_workspace_manager();
 
-const UNFOCUSED_OPACITY = 165; // out of 255 - tune to taste
+const UNFOCUSED_OPACITY = 248; // out of 255 - tune to taste
 const FADE_DURATION = 350;
 
 import {
   initLogging,
-    createLogger,
-    } from './logger.js';
+  createLogger,
+} from './logger.js';
 
 const journal = createLogger(import.meta.url);
 
@@ -35,7 +35,7 @@ export default class FocusedWindowManagerExtension extends Extension {
     this._focusWindowChangedId = Display.connect('notify::focus-window', () => {
       const win = Display.get_focus_window();
 
-      if (this._is_eligible_window(win)){
+      if (this._is_eligible_window(win)) {
         this._animate_window_pop(win);
       }
       this._update_focused_border();
@@ -85,6 +85,7 @@ export default class FocusedWindowManagerExtension extends Extension {
   }
 
   disable() {
+
     for (const [obj, id] of [
       [Display, this._focusWindowChangedId],
       [WorkspaceManager, this._activeWorkspaceChangedId],
@@ -116,6 +117,7 @@ export default class FocusedWindowManagerExtension extends Extension {
       this._borderUpdateId = 0;
     }
 
+    this._clear_dimmed_windows();
     this._disconnect_focused_window_signals();
     this._remove_focused_border();
   }
@@ -223,22 +225,58 @@ export default class FocusedWindowManagerExtension extends Extension {
     if (!win)
       return;
 
-    const actor = win.get_compositor_private();
-    if (!actor)
+    const focusedActor = win.get_compositor_private();
+    if (!focusedActor)
       return;
 
-    actor.set_pivot_point(0.5, 0.5);
-    actor.remove_all_transitions();
-    actor.set_scale(0.96, 0.96);
-    actor.ease({
-      scale_x: 1,
-      scale_y: 1,
-      duration: 220,
-      mode: Clutter.AnimationMode.EASE,
+    if (this._dimmedActors === undefined)
+      this._dimmedActors = new Set();
+
+    // Bring the newly focused window to full solid opacity.
+    focusedActor.remove_all_transitions();
+    focusedActor.ease({
+      opacity: 255,
+      duration: FADE_DURATION,
+      mode: Clutter.AnimationMode.EASE_OUT_QUAD,
     });
+    this._dimmedActors.delete(focusedActor);
+
+    // Dim every other eligible window on the current workspace.
+    const others = this._get_normal_windows_current_workspace().filter(w => w !== win);
+
+    for (const otherWin of others) {
+      const actor = otherWin.get_compositor_private();
+      if (!actor)
+        continue;
+
+      actor.remove_all_transitions();
+      actor.ease({
+        opacity: UNFOCUSED_OPACITY,
+        duration: FADE_DURATION,
+        mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+      });
+      this._dimmedActors.add(actor);
+    }
   }
 
-  // ========= Animation ================ //
+  // Restore full opacity on everything currently dimmed - used on disable()
+  // and whenever we want to make sure nothing is left dimmed (e.g. only one
+  // window left on the workspace).
+  _clear_dimmed_windows() {
+    if (!this._dimmedActors)
+      return;
+
+    for (const actor of this._dimmedActors) {
+      actor.remove_all_transitions();
+      actor.ease({
+        opacity: 255,
+        duration: FADE_DURATION,
+        mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+      });
+    }
+
+    this._dimmedActors.clear();
+  }
 
   _animate_maximize(win) {
     if (!win)
@@ -254,16 +292,15 @@ export default class FocusedWindowManagerExtension extends Extension {
     actor.ease({
       scale_x: 1,
       scale_y: 1,
-      duration: 250,
+      duration: FADE_DURATION,
       mode: Clutter.AnimationMode.EASE_OUT,
     });
   }
 
   // ========= Window queries (self-contained, no shared helper file) ============ //
 
-  _is_eligible_window(win) {
+  _window_exists_on_current_workspace(win) {
     if (!win) return false;
-    if (win.minimized) return false;  // optional: we often filter minimized separately, but it's safe here
 
     const type = win.get_window_type();
     if (type !== Meta.WindowType.NORMAL && type !== Meta.WindowType.DIALOG)
@@ -272,18 +309,24 @@ export default class FocusedWindowManagerExtension extends Extension {
     if (win.is_skip_taskbar())
       return false;
 
-    // Workspace check
     const currentWorkspace = WorkspaceManager.get_active_workspace();
     const winWorkspace = win.get_workspace();
-    if (!winWorkspace) return false; // rare, but safe
+    if (!winWorkspace) return false;
     if (!win.is_on_all_workspaces() && winWorkspace !== currentWorkspace)
       return false;
 
     return true;
   }
 
+  // "Eligible" now means what it should have all along: exists on this
+  // workspace AND currently visible (not minimized). Kept for any call site
+  // that genuinely wants "visible windows only."
+  _is_eligible_window(win) {
+    return this._window_exists_on_current_workspace(win) && !win.minimized;
+  }
+
   _get_normal_windows_current_workspace() {
-    return Display.list_all_windows().filter(win => this._is_eligible_window(win));
+    return Display.list_all_windows().filter(win => this._window_exists_on_current_workspace(win));
   }
 
   _schedule_focus_reevaluation() {
@@ -363,21 +406,23 @@ export default class FocusedWindowManagerExtension extends Extension {
 
   _ensure_focused_window() {
     const allWindows = this._get_normal_windows_current_workspace();
+
     if (allWindows.length === 0) return;
 
-    // Case 1: Single window
+    const visible = allWindows.filter(w => !w.minimized);
+
+    // Case 1: exactly one window exists on this workspace, period - whether
+    // it's currently minimized or not. This only fires when the workspace
+    // truly has a single window, not when a sibling was merely minimized.
     if (allWindows.length === 1) {
       const win = allWindows[0];
-
       const wasMaximized = win.get_maximized() === Meta.MaximizeFlags.BOTH;
 
       if (win.minimized) win.unminimize();
       if (!wasMaximized) win.maximize(3);
-      win.get_workspace().activate_with_focus(win, 0);
+      win.get_workspace().activate_with_focus(win, global.get_current_time());
+      this._clear_dimmed_windows();
 
-      // Only animate when this call actually maximized the window - a
-      // 'restacked' re-run (e.g. from typing in a search box) would otherwise
-      // re-trigger this every time even though nothing changed.
       if (!wasMaximized)
         this._animate_maximize(win);
 
@@ -385,19 +430,17 @@ export default class FocusedWindowManagerExtension extends Extension {
       return;
     }
 
-    // Case 2: Multiple windows
-    const visible = allWindows.filter(w => !w.minimized);
+    // Case 2: multiple windows exist, but some may be minimized. Only pick a
+    // focus target among the ones actually visible right now - a minimized
+    // sibling should never be force-maximized just because it's the only
+    // visible one left.
     if (visible.length === 0) return;
 
-    // Keep only windows that are NOT partially covered by any window above them
     const uncovered = visible.filter(w => !this._is_covered_fully_or_partially(w));
-
-    // Should never be empty because the absolute topmost is always uncovered
     if (uncovered.length === 0) return;
 
     let target;
     if (uncovered.length === 1) {
-      // Only one fully visible window → focus it
       target = uncovered[0];
     } else {
       target = uncovered.reduce((a, b) =>
@@ -405,7 +448,7 @@ export default class FocusedWindowManagerExtension extends Extension {
       );
     }
 
-    target.get_workspace().activate_with_focus(target, 0);
+    target.get_workspace().activate_with_focus(target, global.get_current_time());
     this._update_focused_border();
   }
 }
