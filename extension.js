@@ -250,35 +250,6 @@ export default class FocusedWindowManagerExtension extends Extension {
       );
   }
 
-  _is_covered(window, windows) {
-    if (window.minimized)
-      return false;
-
-    const stacked = Display.sort_windows_by_stacking(windows);
-    const targetIndex = stacked.indexOf(window);
-    if (targetIndex === -1)
-      return false;
-
-    const targetRect = window.get_frame_rect();
-
-    for (let i = targetIndex + 1; i < stacked.length; i++) {
-      const topWin = stacked[i];
-      if (topWin.minimized)
-        continue;
-
-      const topRect = topWin.get_frame_rect();
-      if (topRect.x <= targetRect.x &&
-        topRect.y <= targetRect.y &&
-        topRect.x + topRect.width >= targetRect.x + targetRect.width &&
-        topRect.y + topRect.height >= targetRect.y + targetRect.height)
-        return true;
-    }
-
-    return false;
-  }
-
-  // ========= Ensure-focused logic ================ //
-
   _schedule_focus_reevaluation() {
     if (this._reevalId)
       return;
@@ -290,54 +261,80 @@ export default class FocusedWindowManagerExtension extends Extension {
     });
   }
 
-  // Ensures the current workspace always has a sensible focused window:
-  //   - exactly one window  -> unminimize, maximize, and focus it
-  //   - a fullscreen window that's uncovered -> focus it
-  //   - otherwise (side-by-side / overlapping windows) -> focus whichever
-  //     window is topmost in the stack and not covered by anything else
-  // "above" windows (e.g. pinned windows from another extension) are
-  // excluded so one sitting on every workspace doesn't skew the count.
+  _window_matches(window, predicate) {
+    if (window.minimized)
+      return false;
+
+    let windows = Display.sort_windows_by_stacking(
+      this._get_normal_windows_current_workspace(true)
+    );
+
+    let targetIndex = windows.indexOf(window);
+    if (targetIndex === -1)
+      return false;
+
+    let targetRect = window.get_frame_rect();
+
+    // Check only windows above the target
+    for (let i = targetIndex + 1; i < windows.length; i++) {
+      let topWin = windows[i];
+
+      if (topWin.minimized)
+        continue;
+
+      let topRect = topWin.get_frame_rect();
+
+      if (predicate(targetRect, topRect))
+        return true;
+    }
+
+    return false;
+  }
+
+  _is_covered_partially(window) {
+    return this._window_matches(window, (target, top) =>
+      target.x < top.x + top.width &&
+      target.x + target.width > top.x &&
+      target.y < top.y + top.height &&
+      target.y + target.height > top.y
+    );
+  }
+
   _ensure_focused_window() {
-    const windows = this._get_normal_windows_current_workspace(true);
+    const allWindows = this._get_normal_windows_current_workspace(true);
+    if (allWindows.length === 0) return;
 
-    if (windows.length === 0)
-      return;
-
-    if (windows.length === 1) {
-      const win = windows[0];
-
-      if (win.minimized)
-        win.unminimize();
-
+    // Case 1: Single window
+    if (allWindows.length === 1) {
+      const win = allWindows[0];
+      if (win.minimized) win.unminimize();
       win.maximize(3);
       win.get_workspace().activate_with_focus(win, 0);
       this._update_focused_border();
       return;
     }
 
-    const visible = windows.filter(w => !w.minimized);
-    if (visible.length === 0)
-      return;
+    // Case 2: Multiple windows
+    const visible = allWindows.filter(w => !w.minimized);
+    if (visible.length === 0) return;
 
-    const fullscreen = visible.find(w =>
-      w.get_maximized() === Meta.MaximizeFlags.BOTH && !this._is_covered(w, visible));
-    if (fullscreen) {
-      fullscreen.get_workspace().activate_with_focus(fullscreen, 0);
-      this._update_focused_border();
-      return;
+    // Keep only windows that are NOT partially covered by any window above them
+    const uncovered = visible.filter(w => !this._is_covered_partially(w));
+
+    // Should never be empty because the absolute topmost is always uncovered
+    if (uncovered.length === 0) return;
+
+    let target;
+    if (uncovered.length === 1) {
+      // Only one fully visible window → focus it
+      target = uncovered[0];
+    } else {
+      target = uncovered.reduce((a, b) =>
+        a.get_user_time() > b.get_user_time() ? a : b
+      );
     }
 
-    const stacked = Display.sort_windows_by_stacking(visible);
-    for (let i = stacked.length - 1; i >= 0; i--) {
-      if (!this._is_covered(stacked[i], visible)) {
-        stacked[i].get_workspace().activate_with_focus(stacked[i], 0);
-        this._update_focused_border();
-        return;
-      }
-    }
-
-    const top = stacked[stacked.length - 1];
-    top.get_workspace().activate_with_focus(top, 0);
+    target.get_workspace().activate_with_focus(target, 0);
     this._update_focused_border();
   }
 }
