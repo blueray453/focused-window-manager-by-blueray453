@@ -411,14 +411,16 @@ export default class FocusedWindowManagerExtension extends Extension {
 
     const visible = allWindows.filter(w => !w.minimized);
 
-    // Case 1: exactly one window exists on this workspace, period - whether
-    // it's currently minimized or not. This only fires when the workspace
-    // truly has a single window, not when a sibling was merely minimized.
     if (allWindows.length === 1) {
       const win = allWindows[0];
-      const wasMaximized = win.get_maximized() === Meta.MaximizeFlags.BOTH;
 
-      if (win.minimized) win.unminimize();
+      // Respect a deliberate minimize - don't force it back open just because
+      // it's the only window on this workspace. The user can unminimize it
+      // themselves (click the taskbar/dash, or Super+H toggle, etc.).
+      if (win.minimized)
+        return;
+
+      const wasMaximized = win.get_maximized() === Meta.MaximizeFlags.BOTH;
       if (!wasMaximized) win.maximize(3);
       win.get_workspace().activate_with_focus(win, global.get_current_time());
       this._clear_dimmed_windows();
