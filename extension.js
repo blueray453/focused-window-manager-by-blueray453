@@ -9,11 +9,21 @@ const Display = global.get_display();
 const WindowManager = global.get_window_manager();
 const WorkspaceManager = global.get_workspace_manager();
 
+import {
+  initLogging,
+    createLogger,
+    } from './logger.js';
+
+const journal = createLogger(import.meta.url);
+
 const FOCUSED_BORDER_CLASS = 'focused-border';
 
 export default class FocusedWindowManagerExtension extends Extension {
 
   enable() {
+    initLogging(this.uuid, 'both', false);
+    journal(`Enabled`);
+
     this._focusedBorder = null;
     this._focusedBorderActor = null;
     this._focusedWindowSignals = [];
@@ -236,6 +246,7 @@ export default class FocusedWindowManagerExtension extends Extension {
         (win.get_window_type() === Meta.WindowType.NORMAL ||
           win.get_window_type() === Meta.WindowType.DIALOG) &&
         !win.is_skip_taskbar() &&
+        !win.is_desktop() &&
         (win.is_on_all_workspaces() || win.get_workspace() === currentWorkspace) &&
         !(excludeAbove && win.is_above())
       );
