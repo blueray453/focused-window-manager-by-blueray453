@@ -30,8 +30,11 @@ export default class FocusedWindowManagerExtension extends Extension {
     this._borderUpdateId = 0;
 
     this._focusWindowChangedId = Display.connect('notify::focus-window', () => {
-      // const win = Display.get_focus_window();
-      // this._animate_window_pop(win);
+      const win = Display.get_focus_window();
+
+      if (this._is_eligible_window(win)){
+        this._animate_window_pop(win);
+      }
       this._update_focused_border();
     });
 
@@ -168,10 +171,7 @@ export default class FocusedWindowManagerExtension extends Extension {
   _update_focused_border() {
     const win = Display.get_focus_window();
 
-    if (!win ||
-        win.minimized ||
-        (win.get_window_type() !== Meta.WindowType.NORMAL &&
-         win.get_window_type() !== Meta.WindowType.DIALOG)) {
+    if (!this._is_eligible_window(win)) {
       this._remove_focused_border();
       return;
     }
@@ -237,17 +237,29 @@ export default class FocusedWindowManagerExtension extends Extension {
 
   // ========= Window queries (self-contained, no shared helper file) ============ //
 
-  _get_normal_windows_current_workspace(excludeAbove = false) {
-    const currentWorkspace = WorkspaceManager.get_active_workspace();
+  _is_eligible_window(win) {
+    if (!win) return false;
+    if (win.minimized) return false;  // optional: we often filter minimized separately, but it's safe here
 
-    return Display.list_all_windows()
-      .filter(win =>
-        (win.get_window_type() === Meta.WindowType.NORMAL ||
-          win.get_window_type() === Meta.WindowType.DIALOG) &&
-        !win.is_skip_taskbar() &&
-        (win.is_on_all_workspaces() || win.get_workspace() === currentWorkspace) &&
-        !(excludeAbove && win.is_above())
-      );
+    const type = win.get_window_type();
+    if (type !== Meta.WindowType.NORMAL && type !== Meta.WindowType.DIALOG)
+      return false;
+
+    if (win.is_skip_taskbar())
+      return false;
+
+    // Workspace check
+    const currentWorkspace = WorkspaceManager.get_active_workspace();
+    const winWorkspace = win.get_workspace();
+    if (!winWorkspace) return false; // rare, but safe
+    if (!win.is_on_all_workspaces() && winWorkspace !== currentWorkspace)
+      return false;
+
+    return true;
+  }
+
+  _get_normal_windows_current_workspace() {
+    return Display.list_all_windows().filter(win => this._is_eligible_window(win));
   }
 
   _schedule_focus_reevaluation() {
@@ -266,7 +278,7 @@ export default class FocusedWindowManagerExtension extends Extension {
       return false;
 
     let windows = Display.sort_windows_by_stacking(
-      this._get_normal_windows_current_workspace(true)
+      this._get_normal_windows_current_workspace()
     );
 
     let targetIndex = windows.indexOf(window);
@@ -301,7 +313,7 @@ export default class FocusedWindowManagerExtension extends Extension {
   }
 
   _ensure_focused_window() {
-    const allWindows = this._get_normal_windows_current_workspace(true);
+    const allWindows = this._get_normal_windows_current_workspace();
     if (allWindows.length === 0) return;
 
     // Case 1: Single window
