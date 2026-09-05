@@ -303,7 +303,7 @@ export default class FocusedWindowManagerExtension extends Extension {
     return false;
   }
 
-  _is_covered_partially(window) {
+  _is_covered_fully_or_partially(window) {
     return this._window_matches(window, (target, top) =>
       target.x < top.x + top.width &&
       target.x + target.width > top.x &&
@@ -331,7 +331,7 @@ export default class FocusedWindowManagerExtension extends Extension {
     if (visible.length === 0) return;
 
     // Keep only windows that are NOT partially covered by any window above them
-    const uncovered = visible.filter(w => !this._is_covered_partially(w));
+    const uncovered = visible.filter(w => !this._is_covered_fully_or_partially(w));
 
     // Should never be empty because the absolute topmost is always uncovered
     if (uncovered.length === 0) return;
