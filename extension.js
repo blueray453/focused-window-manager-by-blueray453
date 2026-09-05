@@ -1,5 +1,6 @@
 import Meta from 'gi://Meta';
 import GLib from 'gi://GLib';
+import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
@@ -8,32 +9,64 @@ const Display = global.get_display();
 const WindowManager = global.get_window_manager();
 const WorkspaceManager = global.get_workspace_manager();
 
-import {
-  initLogging,
-  createLogger,
-  } from './logger.js';
-
-const journal = createLogger(import.meta.url);
+const FOCUSED_BORDER_CLASS = 'focused-border';
 
 export default class FocusedWindowManagerExtension extends Extension {
 
   enable() {
-
-    initLogging(this.uuid, 'both', false);
-    journal(`Enabled`);
+    this._focusedBorder = null;
+    this._focusedBorderActor = null;
+    this._focusedWindowSignals = [];
+    this._borderUpdateId = 0;
 
     this._focusWindowChangedId = Display.connect('notify::focus-window', () => {
-      this._animate_window_pop(Display.get_focus_window());
+      const win = Display.get_focus_window();
+
+      this._animate_window_pop(win);
+      this._update_focused_border();
     });
 
     const reevaluate = () => this._schedule_focus_reevaluation();
 
-    this._activeWorkspaceChangedId = WorkspaceManager.connect('active-workspace-changed', reevaluate);
-    this._windowCreatedId = Display.connect('window-created', reevaluate);
-    this._destroyId = WindowManager.connect('destroy', reevaluate);
-    this._minimizeId = WindowManager.connect('minimize', reevaluate);
-    this._unminimizeId = WindowManager.connect('unminimize', reevaluate);
-    this._restackedId = Display.connect('restacked', reevaluate);
+    this._activeWorkspaceChangedId = WorkspaceManager.connect('active-workspace-changed', () => {
+      reevaluate();
+      this._update_focused_border();
+    });
+    this._windowCreatedId = Display.connect('window-created', win => {
+      reevaluate();
+
+      // A newly created window can become focused before the next idle pass.
+      // Refresh the border once the compositor actor exists.
+      GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+        this._update_focused_border();
+        return GLib.SOURCE_REMOVE;
+      });
+    });
+    this._destroyId = WindowManager.connect('destroy', (wm, actor) => {
+      if (actor === this._focusedBorderActor)
+        this._remove_focused_border();
+
+      reevaluate();
+      this._update_focused_border();
+    });
+    this._minimizeId = WindowManager.connect('minimize', (wm, actor) => {
+      reevaluate();
+
+      if (actor === this._focusedBorderActor)
+        this._remove_focused_border();
+    });
+
+    this._unminimizeId = WindowManager.connect('unminimize', () => {
+      reevaluate();
+      this._update_focused_border();
+    });
+
+    this._restackedId = Display.connect('restacked', () => {
+      reevaluate();
+      this._restack_focused_border();
+    });
+
+    this._update_focused_border();
   }
 
   disable() {
@@ -62,6 +95,114 @@ export default class FocusedWindowManagerExtension extends Extension {
       GLib.Source.remove(this._reevalId);
       this._reevalId = 0;
     }
+
+    if (this._borderUpdateId) {
+      GLib.Source.remove(this._borderUpdateId);
+      this._borderUpdateId = 0;
+    }
+
+    this._disconnect_focused_window_signals();
+    this._remove_focused_border();
+  }
+
+  // ========= Focused-window border ================ //
+
+  _disconnect_focused_window_signals() {
+    const win = this._focusedBorderActor?.get_meta_window();
+
+    if (win) {
+      for (const id of this._focusedWindowSignals) {
+        if (id)
+          win.disconnect(id);
+      }
+    }
+
+    this._focusedWindowSignals = [];
+  }
+
+  _schedule_focused_border_update() {
+    if (this._borderUpdateId)
+      return;
+
+    this._borderUpdateId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+      this._borderUpdateId = 0;
+      this._update_focused_border();
+      return GLib.SOURCE_REMOVE;
+    });
+  }
+
+  _remove_focused_border() {
+    this._disconnect_focused_window_signals();
+
+    if (this._focusedBorder?.get_parent())
+      this._focusedBorder.get_parent().remove_child(this._focusedBorder);
+
+    if (this._focusedBorder) {
+      this._focusedBorder.destroy();
+      this._focusedBorder = null;
+    }
+
+    this._focusedBorderActor = null;
+  }
+
+  _restack_focused_border() {
+    const border = this._focusedBorder;
+    const actor = this._focusedBorderActor;
+
+    if (!border || !actor || !border.get_parent())
+      return;
+
+    const windowGroup = global.get_window_group();
+    windowGroup.set_child_above_sibling(border, actor);
+  }
+
+  _update_focused_border() {
+    const win = Display.get_focus_window();
+
+    if (!win ||
+        win.minimized ||
+        (win.get_window_type() !== Meta.WindowType.NORMAL &&
+         win.get_window_type() !== Meta.WindowType.DIALOG)) {
+      this._remove_focused_border();
+      return;
+    }
+
+    const actor = win.get_compositor_private();
+
+    if (!actor || !actor.get_parent()) {
+      this._remove_focused_border();
+      return;
+    }
+
+    if (this._focusedBorderActor !== actor) {
+      this._remove_focused_border();
+
+      this._focusedBorder = new St.Bin({
+        style_class: FOCUSED_BORDER_CLASS,
+        reactive: false,
+      });
+
+      this._focusedBorderActor = actor;
+
+      // Keep the border synchronized with every geometry change. This mirrors
+      // taggedWindowFunctions.js, which listens to position-changed and
+      // size-changed so the border follows moves, resizes, and maximization.
+      const update = () => this._schedule_focused_border_update();
+      this._focusedWindowSignals = [
+        win.connect('position-changed', update),
+        win.connect('size-changed', update),
+        win.connect('workspace-changed', update),
+      ];
+
+      actor.get_parent().add_child(this._focusedBorder);
+      this._restack_focused_border();
+    }
+
+    const rect = win.get_frame_rect();
+    this._focusedBorder.set_position(rect.x, rect.y);
+    this._focusedBorder.set_size(rect.width, rect.height);
+
+    this._restack_focused_border();
   }
 
   // ========= Animation ================ //
@@ -95,7 +236,6 @@ export default class FocusedWindowManagerExtension extends Extension {
         (win.get_window_type() === Meta.WindowType.NORMAL ||
           win.get_window_type() === Meta.WindowType.DIALOG) &&
         !win.is_skip_taskbar() &&
-        !win.is_desktop() &&
         (win.is_on_all_workspaces() || win.get_workspace() === currentWorkspace) &&
         !(excludeAbove && win.is_above())
       );
@@ -162,6 +302,7 @@ export default class FocusedWindowManagerExtension extends Extension {
 
       win.maximize(3);
       win.get_workspace().activate_with_focus(win, 0);
+      this._update_focused_border();
       return;
     }
 
@@ -173,6 +314,7 @@ export default class FocusedWindowManagerExtension extends Extension {
       w.get_maximized() === Meta.MaximizeFlags.BOTH && !this._is_covered(w, visible));
     if (fullscreen) {
       fullscreen.get_workspace().activate_with_focus(fullscreen, 0);
+      this._update_focused_border();
       return;
     }
 
@@ -180,11 +322,13 @@ export default class FocusedWindowManagerExtension extends Extension {
     for (let i = stacked.length - 1; i >= 0; i--) {
       if (!this._is_covered(stacked[i], visible)) {
         stacked[i].get_workspace().activate_with_focus(stacked[i], 0);
+        this._update_focused_border();
         return;
       }
     }
 
     const top = stacked[stacked.length - 1];
     top.get_workspace().activate_with_focus(top, 0);
+    this._update_focused_border();
   }
 }
