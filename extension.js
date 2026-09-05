@@ -95,6 +95,7 @@ export default class FocusedWindowManagerExtension extends Extension {
         (win.get_window_type() === Meta.WindowType.NORMAL ||
           win.get_window_type() === Meta.WindowType.DIALOG) &&
         !win.is_skip_taskbar() &&
+        !win.is_desktop() &&
         (win.is_on_all_workspaces() || win.get_workspace() === currentWorkspace) &&
         !(excludeAbove && win.is_above())
       );
