@@ -9,6 +9,9 @@ const Display = global.get_display();
 const WindowManager = global.get_window_manager();
 const WorkspaceManager = global.get_workspace_manager();
 
+const UNFOCUSED_OPACITY = 165; // out of 255 - tune to taste
+const FADE_DURATION = 350;
+
 import {
   initLogging,
     createLogger,
@@ -30,11 +33,11 @@ export default class FocusedWindowManagerExtension extends Extension {
     this._borderUpdateId = 0;
 
     this._focusWindowChangedId = Display.connect('notify::focus-window', () => {
-      // const win = Display.get_focus_window();
+      const win = Display.get_focus_window();
 
-      // if (this._is_eligible_window(win)){
-      //   this._animate_window_pop(win);
-      // }
+      if (this._is_eligible_window(win)){
+        this._animate_window_pop(win);
+      }
       this._update_focused_border();
     });
 
@@ -231,7 +234,28 @@ export default class FocusedWindowManagerExtension extends Extension {
       scale_x: 1,
       scale_y: 1,
       duration: 220,
-      mode: Clutter.AnimationMode.EASE_OUT_BACK,
+      mode: Clutter.AnimationMode.EASE,
+    });
+  }
+
+  // ========= Animation ================ //
+
+  _animate_maximize(win) {
+    if (!win)
+      return;
+
+    const actor = win.get_compositor_private();
+    if (!actor)
+      return;
+
+    actor.set_pivot_point(0.5, 0.5);
+    actor.remove_all_transitions();
+    actor.set_scale(0, 0);
+    actor.ease({
+      scale_x: 1,
+      scale_y: 1,
+      duration: 250,
+      mode: Clutter.AnimationMode.EASE_OUT,
     });
   }
 
@@ -344,9 +368,19 @@ export default class FocusedWindowManagerExtension extends Extension {
     // Case 1: Single window
     if (allWindows.length === 1) {
       const win = allWindows[0];
+
+      const wasMaximized = win.get_maximized() === Meta.MaximizeFlags.BOTH;
+
       if (win.minimized) win.unminimize();
-      win.maximize(3);
+      if (!wasMaximized) win.maximize(3);
       win.get_workspace().activate_with_focus(win, 0);
+
+      // Only animate when this call actually maximized the window - a
+      // 'restacked' re-run (e.g. from typing in a search box) would otherwise
+      // re-trigger this every time even though nothing changed.
+      if (!wasMaximized)
+        this._animate_maximize(win);
+
       this._update_focused_border();
       return;
     }
