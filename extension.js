@@ -9,7 +9,7 @@ const Display = global.get_display();
 const WindowManager = global.get_window_manager();
 const WorkspaceManager = global.get_workspace_manager();
 
-const UNFOCUSED_OPACITY = 248; // out of 255 - tune to taste
+const UNFOCUSED_OPACITY = 252; // out of 255 - tune to taste
 const FADE_DURATION = 350;
 
 import {

@@ -1,5 +1,5 @@
 .focused-border {
-    border: 3px solid #2aa198;
+    border: 6px solid #2aa198;
     border-radius: 8px;
     background: none;
     pointer-events: none;  /* allow clicks to pass through */
