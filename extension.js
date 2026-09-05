@@ -30,11 +30,11 @@ export default class FocusedWindowManagerExtension extends Extension {
     this._borderUpdateId = 0;
 
     this._focusWindowChangedId = Display.connect('notify::focus-window', () => {
-      const win = Display.get_focus_window();
+      // const win = Display.get_focus_window();
 
-      if (this._is_eligible_window(win)){
-        this._animate_window_pop(win);
-      }
+      // if (this._is_eligible_window(win)){
+      //   this._animate_window_pop(win);
+      // }
       this._update_focused_border();
     });
 
