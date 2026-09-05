@@ -1,0 +1,8 @@
+{
+  "uuid": "focused-window-manager-by-blueray453",
+  "name": "Focused Window Manager by blueray453",
+  "description": "GNOME Shell extension that ...",
+  "version": 1,
+  "shell-version": ["48", "49"],
+  "url": "https://github.com/blueray453/focused-window-manager-by-blueray453"
+}
