@@ -31,6 +31,7 @@ export default class FocusedWindowManagerExtension extends Extension {
     this._focusedBorderActor = null;
     this._focusedWindowSignals = [];
     this._borderUpdateId = 0;
+    this._reevalRestoreMinimized = false;
 
     this._focusWindowChangedId = Display.connect('notify::focus-window', () => {
       const win = Display.get_focus_window();
@@ -41,12 +42,13 @@ export default class FocusedWindowManagerExtension extends Extension {
       this._update_focused_border();
     });
 
-    const reevaluate = () => this._schedule_focus_reevaluation();
+    const reevaluate = (options) => this._schedule_focus_reevaluation(options);
 
     this._activeWorkspaceChangedId = WorkspaceManager.connect('active-workspace-changed', () => {
-      reevaluate();
+      reevaluate({ restoreMinimized: true }); // arriving on this workspace should restore a lone minimized window
       this._update_focused_border();
     });
+
     this._windowCreatedId = Display.connect('window-created', win => {
       reevaluate();
 
@@ -329,13 +331,20 @@ export default class FocusedWindowManagerExtension extends Extension {
     return Display.list_all_windows().filter(win => this._window_exists_on_current_workspace(win));
   }
 
-  _schedule_focus_reevaluation() {
+  _schedule_focus_reevaluation(options = {}) {
+    // OR'd across calls: if any trigger in this debounce window asked for a
+    // restore (i.e. a workspace switch happened), honor it even if a plain
+    // minimize/restack also fired in the same burst.
+    this._reevalRestoreMinimized = this._reevalRestoreMinimized || !!options.restoreMinimized;
+
     if (this._reevalId)
       return;
 
     this._reevalId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
       this._reevalId = 0;
-      this._ensure_focused_window();
+      const restoreMinimized = this._reevalRestoreMinimized;
+      this._reevalRestoreMinimized = false;
+      this._ensure_focused_window(restoreMinimized);
       return GLib.SOURCE_REMOVE;
     });
   }
@@ -404,7 +413,7 @@ export default class FocusedWindowManagerExtension extends Extension {
     return false;
   }
 
-  _ensure_focused_window() {
+  _ensure_focused_window(restoreMinimized = false) {
     const allWindows = this._get_normal_windows_current_workspace();
 
     if (allWindows.length === 0) return;
@@ -414,11 +423,15 @@ export default class FocusedWindowManagerExtension extends Extension {
     if (allWindows.length === 1) {
       const win = allWindows[0];
 
-      // Respect a deliberate minimize - don't force it back open just because
-      // it's the only window on this workspace. The user can unminimize it
-      // themselves (click the taskbar/dash, or Super+H toggle, etc.).
-      if (win.minimized)
+      // Only refuse to touch a minimized lone window when this reevaluation
+      // was NOT triggered by a workspace switch - e.g. the user just
+      // minimized it and nothing else happened. A workspace switch that
+      // lands on a single minimized window should restore it.
+      if (win.minimized && !restoreMinimized)
         return;
+
+      if (win.minimized)
+        win.unminimize();
 
       const wasMaximized = win.get_maximized() === Meta.MaximizeFlags.BOTH;
       if (!wasMaximized) win.maximize(3);
@@ -432,10 +445,7 @@ export default class FocusedWindowManagerExtension extends Extension {
       return;
     }
 
-    // Case 2: multiple windows exist, but some may be minimized. Only pick a
-    // focus target among the ones actually visible right now - a minimized
-    // sibling should never be force-maximized just because it's the only
-    // visible one left.
+    // Case 2 unchanged - multi-window branch never touches minimize state.
     if (visible.length === 0) return;
 
     const uncovered = visible.filter(w => !this._is_covered_fully_or_partially(w));
