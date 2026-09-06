@@ -37,6 +37,7 @@ function initState() {
     borderUpdateId: 0,      // idle id: debounced border update
     reevalId: 0,            // idle id: debounced focus reevaluation
     reevalRestoreMinimized: false, // sticky flag, see scheduleReevaluate()
+    reevalJustMinimizedWindow: null, // last window minimized within this debounce window
     lastSoloWindow: null, // tracks which window we last saw as the workspace's only window
   };
 }
@@ -289,11 +290,11 @@ function borderDestroy() {
 // ===== focus policy (plain functions over state.reeval*) =====
 
 function scheduleReevaluate(options = {}) {
-  // OR'd across calls: if any trigger in this debounce window asked for a
-  // restore (i.e. a workspace switch happened), honor it even if a plain
-  // minimize/restack also fired in the same burst.
   state.reevalRestoreMinimized =
     state.reevalRestoreMinimized || !!options.restoreMinimized;
+
+  if (options.justMinimizedWindow)
+    state.reevalJustMinimizedWindow = options.justMinimizedWindow;
 
   if (state.reevalId)
     return;
@@ -301,13 +302,15 @@ function scheduleReevaluate(options = {}) {
   state.reevalId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
     state.reevalId = 0;
     const restoreMinimized = state.reevalRestoreMinimized;
+    const justMinimizedWindow = state.reevalJustMinimizedWindow;
     state.reevalRestoreMinimized = false;
-    ensureFocusedWindow(restoreMinimized);
+    state.reevalJustMinimizedWindow = null;
+    ensureFocusedWindow(restoreMinimized, justMinimizedWindow);
     return GLib.SOURCE_REMOVE;
   });
 }
 
-function ensureFocusedWindow(restoreMinimized = false) {
+function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = null) {
   const allWindows = windowsOnCurrentWorkspace();
 
   if (allWindows.length === 0) return;
@@ -317,11 +320,6 @@ function ensureFocusedWindow(restoreMinimized = false) {
   if (allWindows.length === 1) {
     const win = allWindows[0];
 
-    // Was this window already the workspace's solo window last time we
-    // checked, or is this a fresh transition into solo state? An ambient
-    // rerun (menu popup's window-created/restacked) for a window that's
-    // been alone here for a while must never re-force a maximize the user
-    // deliberately undid.
     const isNewSoloState = state.lastSoloWindow !== win;
     state.lastSoloWindow = win;
 
@@ -348,7 +346,29 @@ function ensureFocusedWindow(restoreMinimized = false) {
     return;
   }
 
-  state.lastSoloWindow = null; // no longer alone - next solo transition should count as new
+  // Case 2: multiple windows exist - reset solo tracking so the next
+  // 1-window transition is always treated as fresh.
+  state.lastSoloWindow = null;
+
+  if (visible.length === 0 && allWindows.length === 2) {
+    // Exactly two windows, both now minimized - bring back specifically
+    // the one that wasn't just minimized, not whichever was used most
+    // recently (the just-minimized window was likely focused right before
+    // being minimized, so recency would pick the wrong one).
+    const other = justMinimizedWindow
+      ? allWindows.find(w => w !== justMinimizedWindow)
+      : allWindows.reduce((a, b) => a.get_user_time() > b.get_user_time() ? a : b);
+
+    if (!other) return; // shouldn't happen, but guard anyway
+
+    other.unminimize();
+    other.maximize(3);
+    other.get_workspace().activate_with_focus(other, global.get_current_time());
+    undimAll();
+    reveal(other);
+    borderUpdate();
+    return;
+  }
 
   if (visible.length === 0) return;
 
@@ -452,7 +472,7 @@ export default class FocusedWindowManagerExtension extends Extension {
   }
 
   onWindowMinimized(wm, actor) {
-    scheduleReevaluate();
+    scheduleReevaluate({ justMinimizedWindow: actor.get_meta_window() });
     borderRemoveIfMatches(actor);
   }
 
