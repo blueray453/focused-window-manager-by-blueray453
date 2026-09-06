@@ -313,7 +313,10 @@ function scheduleReevaluate(options = {}) {
 function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = null) {
   const allWindows = windowsOnCurrentWorkspace();
 
-  if (allWindows.length === 0) return;
+  if (allWindows.length === 0) {
+    state.lastSoloWindow = null;
+    return;
+  }
 
   const visible = allWindows.filter(w => !w.minimized);
 
@@ -351,15 +354,14 @@ function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = nul
   state.lastSoloWindow = null;
 
   if (visible.length === 0 && allWindows.length === 2) {
-    // Exactly two windows, both now minimized - bring back specifically
-    // the one that wasn't just minimized, not whichever was used most
-    // recently (the just-minimized window was likely focused right before
-    // being minimized, so recency would pick the wrong one).
+    if (!justMinimizedWindow && !restoreMinimized)
+      return; // ambient recheck while both are already minimized - leave them alone
+
     const other = justMinimizedWindow
       ? allWindows.find(w => w !== justMinimizedWindow)
       : allWindows.reduce((a, b) => a.get_user_time() > b.get_user_time() ? a : b);
 
-    if (!other) return; // shouldn't happen, but guard anyway
+    if (!other) return;
 
     other.unminimize();
     other.maximize(3);
