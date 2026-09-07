@@ -1,13 +1,6 @@
-.activated-border {
-    border: 6px solid rgba(181, 137, 0, 0.5);    /* 50% opacity */
-    border-radius: 8px;
-    background: none;
-    pointer-events: none;
-}
-
 .focused-border {
-    border: 6px solid rgba(42, 161, 152, 0.6);  /* 0.6 = 60% opacity */
-    border-radius: 8px;
+    border: 8px solid rgba(42, 161, 152, 0.6);  /* 0.6 = 60% opacity */
+    border-radius: 12px;
     background: none;
     pointer-events: none;
 }
