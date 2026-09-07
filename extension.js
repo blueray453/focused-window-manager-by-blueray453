@@ -37,7 +37,7 @@ let state;
 function initState() {
   state = {
     connections: [],
-    dimmed: new Set(),                      // actors currently dimmed
+    dimmed: new Set(),
     brightnessEffectByActor: new WeakMap(),
     desatEffectByActor: new WeakMap(),
     border: null,
