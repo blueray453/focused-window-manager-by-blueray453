@@ -103,6 +103,9 @@ function isCoveredFullyOrPartially(window) {
 // ===== Dimming functions =====
 
 function applyDimEffects(actor) {
+  // Opacity – set directly (no animation)
+  actor.opacity = UNFOCUSED_OPACITY;
+
   // Brightness (darkness)
   let brightnessEffect = state.brightnessEffectByActor.get(actor);
   if (UNFOCUSED_BRIGHTNESS !== 0.0) {
@@ -131,6 +134,8 @@ function applyDimEffects(actor) {
     actor.remove_effect(desatEffect);
     state.desatEffectByActor.delete(actor);
   }
+
+  state.dimmed.add(actor);
 }
 
 function removeDimEffects(actor) {
@@ -154,29 +159,18 @@ function dimFocus(win, others) {
   const focusedActor = win?.get_compositor_private();
   if (focusedActor) {
     removeDimEffects(focusedActor);
-    state.dimmed.delete(focusedActor);
   }
 
   // Dim others
   for (const otherWin of others) {
     const actor = otherWin.get_compositor_private();
     if (!actor) continue;
-
-    applyDimEffects(actor);  // apply brightness & desaturation
-
-    actor.remove_all_transitions();
-    actor.ease({
-      opacity: UNFOCUSED_OPACITY,
-      duration: FADE_DURATION,
-      mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-    });
-    state.dimmed.add(actor);
+    applyDimEffects(actor);   // sets opacity, brightness, desat
   }
 }
 
 function undimAll() {
   for (const actor of state.dimmed) {
-    actor.remove_all_transitions();
     removeDimEffects(actor);
   }
   state.dimmed.clear();
