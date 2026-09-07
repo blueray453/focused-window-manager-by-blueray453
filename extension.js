@@ -186,10 +186,8 @@ function reveal(win) {
 // ===== border (plain functions over state.border*) =====
 
 const FOCUSED_BORDER_CLASS = 'focused-border';
-const ACTIVATED_BORDER_CLASS = 'activated-border';
 
 const focusedBorder = makeBorderTracker(FOCUSED_BORDER_CLASS);
-const activatedBorder = makeBorderTracker(ACTIVATED_BORDER_CLASS);
 
 function makeBorderTracker(cssClass) {
   let border = null;
@@ -289,35 +287,22 @@ function borderUpdate() {
 
   if (!isEligible(win)) {
     focusedBorder.remove();
-    activatedBorder.remove();
     return;
   }
 
-  focusedBorder.update(win); // win === Display.focus_window, so it's always genuinely focused
-
-  const parent = win.get_transient_for();
-  const parentAppearsActivated =
-    parent && isEligible(parent) && parent.appears_focused() && !parent.has_focus();
-
-  if (parentAppearsActivated)
-    activatedBorder.update(parent);
-  else
-    activatedBorder.remove();
+  focusedBorder.update(win);
 }
 
 function borderRestack() {
   focusedBorder.restack();
-  activatedBorder.restack();
 }
 
 function borderRemoveIfMatches(actor) {
   focusedBorder.removeIfActorMatches(actor);
-  activatedBorder.removeIfActorMatches(actor);
 }
 
 function borderDestroy() {
   focusedBorder.destroy();
-  activatedBorder.destroy();
 }
 
 // ===== focus policy (plain functions over state.reeval*) =====
