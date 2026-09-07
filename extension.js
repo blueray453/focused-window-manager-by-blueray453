@@ -9,7 +9,10 @@ const Display = global.get_display();
 const WindowManager = global.get_window_manager();
 const WorkspaceManager = global.get_workspace_manager();
 
-const UNFOCUSED_OPACITY = 252; // out of 255 - tune to taste
+// ===== Hardcoded inactive window style =====
+const UNFOCUSED_OPACITY = 204;          // 80% of 255
+const UNFOCUSED_BRIGHTNESS = -0.1;      // 10% darkness
+const UNFOCUSED_DESATURATION = 1.0;     // fully desaturated
 const FADE_DURATION = 350;
 
 import {
@@ -21,44 +24,39 @@ import {
 
 const journal = createLogger(import.meta.url);
 
-// ===== state: one object, reset by enable(), torn down by disable() =====
-// Module-level state survives disable->enable in GNOME, so enable() must
-// always start from a fresh initState().
+// ===== state =====
 let state;
 
 function initState() {
   state = {
-    connections: [],        // [object, signalId]
-    dimmed: new Set(),      // actors currently dimmed
-    border: null,           // St.Bin or null
-    borderActor: null,      // window actor the border currently tracks
-    borderSignals: [],      // signal ids on the tracked window
-    borderUpdateId: 0,      // idle id: debounced border update
-    reevalId: 0,            // idle id: debounced focus reevaluation
-    reevalRestoreMinimized: false, // sticky flag, see scheduleReevaluate()
-    reevalJustMinimizedWindow: null, // last window minimized within this debounce window
-    lastSoloWindow: null, // tracks which window we last saw as the workspace's only window
+    connections: [],
+    dimmed: new Set(),                      // actors currently dimmed
+    brightnessEffectByActor: new WeakMap(),
+    desatEffectByActor: new WeakMap(),
+    border: null,
+    borderActor: null,
+    borderSignals: [],
+    borderUpdateId: 0,
+    reevalId: 0,
+    reevalRestoreMinimized: false,
+    reevalJustMinimizedWindow: null,
+    lastSoloWindow: null,
   };
 }
 
-// ===== queries (pure: read the shell, return answers) =====
+// ===== queries (unchanged) =====
 
 function windowExistsOnCurrentWorkspace(win) {
   if (!win) return false;
-
   const type = win.get_window_type();
   if (type !== Meta.WindowType.NORMAL && type !== Meta.WindowType.DIALOG)
     return false;
-
-  if (win.is_skip_taskbar())
-    return false;
-
+  if (win.is_skip_taskbar()) return false;
   const currentWorkspace = WorkspaceManager.get_active_workspace();
   const winWorkspace = win.get_workspace();
   if (!winWorkspace) return false;
   if (!win.is_on_all_workspaces() && winWorkspace !== currentWorkspace)
     return false;
-
   return true;
 }
 
@@ -85,60 +83,87 @@ function rectsIntersect(a, b) {
 
 function isCoveredFullyOrPartially(window) {
   if (window.minimized) return false;
-
   const windows = Display.sort_windows_by_stacking(windowsOnCurrentWorkspace());
   const targetIndex = windows.indexOf(window);
   if (targetIndex === -1) return false;
-
   const workArea = WorkspaceManager.get_active_workspace()
     .get_work_area_for_monitor(window.get_monitor());
-
   const target = rectClippedToWorkArea(window.get_frame_rect(), workArea);
   if (target.width <= 0 || target.height <= 0) return false;
-
   for (let i = targetIndex + 1; i < windows.length; i++) {
     const topWin = windows[i];
     if (topWin.minimized) continue;
-
     const top = rectClippedToWorkArea(topWin.get_frame_rect(), workArea);
     if (top.width <= 0 || top.height <= 0) continue;
-
-    if (rectsIntersect(target, top))
-      return true;
+    if (rectsIntersect(target, top)) return true;
   }
-
   return false;
 }
 
-// ===== animations (plain functions over state.dimmed) =====
-// Set ANIMATIONS_ENABLED = false to kill all animation without touching
-// any focus-tracking logic.
+// ===== Dimming functions =====
 
-const ANIMATIONS_ENABLED = true;
+function applyDimEffects(actor, opacity, brightness, desatFactor) {
+  // Opacity is set directly; animation is done in dimFocus
+  actor.opacity = opacity;
+
+  // Brightness (darkness)
+  let brightnessEffect = state.brightnessEffectByActor.get(actor);
+  if (brightness !== 0.0) {
+    if (!brightnessEffect) {
+      brightnessEffect = new Clutter.BrightnessContrastEffect();
+      actor.add_effect(brightnessEffect);
+      state.brightnessEffectByActor.set(actor, brightnessEffect);
+    }
+    brightnessEffect.set_brightness(brightness);
+  } else if (brightnessEffect) {
+    actor.remove_effect(brightnessEffect);
+    state.brightnessEffectByActor.delete(actor);
+  }
+
+  // Desaturation
+  let desatEffect = state.desatEffectByActor.get(actor);
+  if (desatFactor > 0.0) {
+    if (!desatEffect) {
+      desatEffect = new Clutter.DesaturateEffect({ factor: desatFactor });
+      actor.add_effect(desatEffect);
+      state.desatEffectByActor.set(actor, desatEffect);
+    } else {
+      desatEffect.factor = desatFactor;
+    }
+  } else if (desatEffect) {
+    actor.remove_effect(desatEffect);
+    state.desatEffectByActor.delete(actor);
+  }
+}
+
+function removeDimEffects(actor) {
+  actor.opacity = 255;
+
+  const brightnessEffect = state.brightnessEffectByActor.get(actor);
+  if (brightnessEffect) {
+    actor.remove_effect(brightnessEffect);
+    state.brightnessEffectByActor.delete(actor);
+  }
+  const desatEffect = state.desatEffectByActor.get(actor);
+  if (desatEffect) {
+    actor.remove_effect(desatEffect);
+    state.desatEffectByActor.delete(actor);
+  }
+  state.dimmed.delete(actor);
+}
 
 function dimFocus(win, others) {
   const focusedActor = win?.get_compositor_private();
-  if (!focusedActor)
-    return;
-
-  if (!ANIMATIONS_ENABLED) {
-    undimAll();
-    return;
+  if (focusedActor) {
+    removeDimEffects(focusedActor);
+    state.dimmed.delete(focusedActor);
   }
-
-  focusedActor.remove_all_transitions();
-  focusedActor.ease({
-    opacity: 255,
-    duration: FADE_DURATION,
-    mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-  });
-  state.dimmed.delete(focusedActor);
 
   for (const otherWin of others) {
     const actor = otherWin.get_compositor_private();
-    if (!actor)
-      continue;
+    if (!actor) continue;
 
+    applyDimEffects(actor, UNFOCUSED_OPACITY, UNFOCUSED_BRIGHTNESS, UNFOCUSED_DESATURATION);
     actor.remove_all_transitions();
     actor.ease({
       opacity: UNFOCUSED_OPACITY,
@@ -152,26 +177,31 @@ function dimFocus(win, others) {
 function undimAll() {
   for (const actor of state.dimmed) {
     actor.remove_all_transitions();
-    actor.ease({
-      opacity: 255,
-      duration: FADE_DURATION,
-      mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-    });
+    removeDimEffects(actor);
   }
   state.dimmed.clear();
 }
 
-// Scale-in reveal, used identically whether a window was just maximized
-// or just restored from minimized - both are "this window just became
-// the visible one" and should feel the same.
+function refreshDimming() {
+  const focusWin = Display.get_focus_window();
+  const eligible = windowsOnCurrentWorkspace().filter(isEligible);
+
+  if (focusWin && eligible.includes(focusWin)) {
+    const others = eligible.filter(w => w !== focusWin);
+    dimFocus(focusWin, others);
+  } else {
+    undimAll();
+  }
+}
+
+// ===== reveal animation (unchanged) =====
+
+const ANIMATIONS_ENABLED = true;
+
 function reveal(win) {
-  if (!ANIMATIONS_ENABLED)
-    return;
-
+  if (!ANIMATIONS_ENABLED) return;
   const actor = win?.get_compositor_private();
-  if (!actor)
-    return;
-
+  if (!actor) return;
   actor.set_pivot_point(0.5, 0.5);
   actor.remove_all_transitions();
   actor.set_scale(0, 0);
@@ -183,7 +213,7 @@ function reveal(win) {
   });
 }
 
-// ===== border (plain functions over state.border*) =====
+// ===== border (unchanged) =====
 
 const FOCUSED_BORDER_CLASS = 'focused-border';
 
@@ -237,29 +267,24 @@ function makeBorderTracker(cssClass) {
       remove();
       return;
     }
-
     const actor = win.get_compositor_private();
     if (!actor || !actor.get_parent()) {
       remove();
       return;
     }
-
     if (trackedActor !== actor) {
       remove();
       border = new St.Bin({ style_class: cssClass, reactive: false });
       trackedActor = actor;
-
       const onGeometryChanged = () => scheduleUpdate(win);
       signals = [
         win.connect('position-changed', onGeometryChanged),
         win.connect('size-changed', onGeometryChanged),
         win.connect('workspace-changed', onGeometryChanged),
       ];
-
       actor.get_parent().add_child(border);
       restack();
     }
-
     const rect = win.get_frame_rect();
     border.set_position(rect.x, rect.y);
     border.set_size(rect.width, rect.height);
@@ -284,12 +309,10 @@ function makeBorderTracker(cssClass) {
 
 function borderUpdate() {
   const win = Display.get_focus_window();
-
   if (!isEligible(win)) {
     focusedBorder.remove();
     return;
   }
-
   focusedBorder.update(win);
 }
 
@@ -305,18 +328,15 @@ function borderDestroy() {
   focusedBorder.destroy();
 }
 
-// ===== focus policy (plain functions over state.reeval*) =====
+// ===== focus policy (unchanged, now calls refreshDimming) =====
 
 function scheduleReevaluate(options = {}) {
   state.reevalRestoreMinimized =
     state.reevalRestoreMinimized || !!options.restoreMinimized;
-
   if (options.justMinimizedWindow)
     state.reevalJustMinimizedWindow = options.justMinimizedWindow;
-
   if (state.reevalId)
     return;
-
   state.reevalId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
     state.reevalId = 0;
     const restoreMinimized = state.reevalRestoreMinimized;
@@ -330,71 +350,65 @@ function scheduleReevaluate(options = {}) {
 
 function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = null) {
   const allWindows = windowsOnCurrentWorkspace();
-
   if (allWindows.length === 0) {
     state.lastSoloWindow = null;
+    refreshDimming();
     return;
   }
-
   const visible = allWindows.filter(w => !w.minimized);
 
   if (allWindows.length === 1) {
     const win = allWindows[0];
-
     const isNewSoloState = state.lastSoloWindow !== win;
     state.lastSoloWindow = win;
-
-    if (win.minimized && !restoreMinimized)
+    if (win.minimized && !restoreMinimized) {
+      refreshDimming();
       return;
-
+    }
     const wasMinimized = win.minimized;
     if (wasMinimized)
       win.unminimize();
-
     const wasMaximized = win.get_maximized() === Meta.MaximizeFlags.BOTH;
     const shouldForceMaximize = isNewSoloState || restoreMinimized;
-
     if (!wasMaximized && shouldForceMaximize)
       win.maximize(3);
-
     win.get_workspace().activate_with_focus(win, global.get_current_time());
-    undimAll();
-
+    refreshDimming();
     if (wasMinimized || (!wasMaximized && shouldForceMaximize))
       reveal(win);
-
     borderUpdate();
     return;
   }
 
-  // Case 2: multiple windows exist - reset solo tracking so the next
-  // 1-window transition is always treated as fresh.
   state.lastSoloWindow = null;
 
   if (visible.length === 0 && allWindows.length === 2) {
-    if (!justMinimizedWindow && !restoreMinimized)
-      return; // ambient recheck while both are already minimized - leave them alone
-
+    if (!justMinimizedWindow && !restoreMinimized) {
+      refreshDimming();
+      return;
+    }
     const other = justMinimizedWindow
       ? allWindows.find(w => w !== justMinimizedWindow)
       : allWindows.reduce((a, b) => a.get_user_time() > b.get_user_time() ? a : b);
-
     if (!other) return;
-
     other.unminimize();
     other.maximize(3);
     other.get_workspace().activate_with_focus(other, global.get_current_time());
-    undimAll();
+    refreshDimming();
     reveal(other);
     borderUpdate();
     return;
   }
 
-  if (visible.length === 0) return;
-
+  if (visible.length === 0) {
+    refreshDimming();
+    return;
+  }
   const uncovered = visible.filter(w => !isCoveredFullyOrPartially(w));
-  if (uncovered.length === 0) return;
-
+  if (uncovered.length === 0) {
+    refreshDimming();
+    return;
+  }
   let target;
   if (uncovered.length === 1) {
     target = uncovered[0];
@@ -403,8 +417,8 @@ function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = nul
       a.get_user_time() > b.get_user_time() ? a : b
     );
   }
-
   target.get_workspace().activate_with_focus(target, global.get_current_time());
+  refreshDimming();
   borderUpdate();
 }
 
@@ -415,7 +429,7 @@ function policyDestroy() {
   }
 }
 
-// ===== extension: wiring + one handler per signal =====
+// ===== extension =====
 
 export default class FocusedWindowManagerExtension extends Extension {
 
@@ -425,7 +439,6 @@ export default class FocusedWindowManagerExtension extends Extension {
 
     initState();
 
-    // ---- wiring: one line per signal, nothing inline ----
     this._connections = [
       [Display, 'notify::focus-window', this.onFocusWindowChanged.bind(this)],
       [WorkspaceManager, 'active-workspace-changed', this.onWorkspaceChanged.bind(this)],
@@ -436,6 +449,7 @@ export default class FocusedWindowManagerExtension extends Extension {
       [Display, 'restacked', this.onRestacked.bind(this)],
     ].map(([obj, signal, handler]) => [obj, obj.connect(signal, handler)]);
 
+    refreshDimming();
     borderUpdate();
   }
 
@@ -453,56 +467,54 @@ export default class FocusedWindowManagerExtension extends Extension {
     stopLogging();
   }
 
-  // ---- one func per signal, in wiring order ----
+  // ---- signal handlers ----
 
   onFocusWindowChanged() {
-    const win = Display.get_focus_window();
-
-    if (isEligible(win)) {
-      const others = windowsOnCurrentWorkspace()
-        .filter(w => w !== win && isEligible(w));
-      dimFocus(win, others);
-    }
-
+    refreshDimming();
     borderUpdate();
   }
 
   onWorkspaceChanged() {
-    // arriving on this workspace should restore a lone minimized window
     scheduleReevaluate({ restoreMinimized: true });
+    refreshDimming();   // <-- dimming updated on workspace switch
     borderUpdate();
   }
 
   onWindowCreated() {
     scheduleReevaluate();
-
-    // A newly created window can become focused before the next idle pass.
-    // Refresh the border once the compositor actor exists.
     GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
-      if (state)
+      if (state) {
+        refreshDimming();
         borderUpdate();
+      }
       return GLib.SOURCE_REMOVE;
     });
   }
 
   onWindowDestroyed(wm, actor) {
     borderRemoveIfMatches(actor);
+    state.dimmed.delete(actor);  // clean up
     scheduleReevaluate();
+    refreshDimming();
     borderUpdate();
   }
 
   onWindowMinimized(wm, actor) {
     scheduleReevaluate({ justMinimizedWindow: actor.get_meta_window() });
     borderRemoveIfMatches(actor);
+    state.dimmed.delete(actor);
+    refreshDimming();
   }
 
   onWindowUnminimized() {
     scheduleReevaluate();
+    refreshDimming();
     borderUpdate();
   }
 
   onRestacked() {
     scheduleReevaluate();
     borderRestack();
+    refreshDimming();
   }
 }
