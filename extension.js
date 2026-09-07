@@ -1,26 +1,17 @@
 import Meta from 'gi://Meta';
 import GLib from 'gi://GLib';
+import Gio from 'gi://Gio';
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
+import GObject from 'gi://GObject';
 
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 
 const Display = global.get_display();
 const WindowManager = global.get_window_manager();
 const WorkspaceManager = global.get_workspace_manager();
-
-// ===== Hardcoded inactive window style =====
-// const UNFOCUSED_OPACITY = 255;
-// const UNFOCUSED_BRIGHTNESS = 0.0;
-// const UNFOCUSED_DESATURATION = 0.0;
-
-const UNFOCUSED_OPACITY = 255;
-const UNFOCUSED_BRIGHTNESS = -0.2;
-const UNFOCUSED_DESATURATION = 0.0;
-
-// const UNFOCUSED_OPACITY = 204;          // Range: 0–255 (integer)
-// const UNFOCUSED_BRIGHTNESS = -0.1;      // Range: -1.0 to 1.0 (floating point)
-// const UNFOCUSED_DESATURATION = 1.0;     // Range: 0.0 to 1.0 (floating point)
 
 import {
   initLogging,
@@ -30,6 +21,15 @@ import {
 } from './logger.js';
 
 const journal = createLogger(import.meta.url);
+
+// ===== dim combos (low -> high intensity) =====
+// Replaces the three standalone UNFOCUSED_* consts. Same meaning,
+// same ranges — just grouped so one index can select all three at once.
+const DIM_COMBOS = [
+  { opacity: 255, brightness: 0.0, desaturation: 0.0, iconFile: 'icon1-symbolic.svg', cssClass: 'lamp-level-1' },
+  { opacity: 255, brightness: -0.2, desaturation: 0.0, iconFile: 'icon2-symbolic.svg', cssClass: 'lamp-level-2' },
+  { opacity: 204, brightness: -0.1, desaturation: 1.0, iconFile: 'icon3-symbolic.svg', cssClass: 'lamp-level-3' },
+];
 
 // ===== state =====
 let state;
@@ -48,7 +48,26 @@ function initState() {
     reevalRestoreMinimized: false,
     reevalJustMinimizedWindow: null,
     lastSoloWindow: null,
+    comboIndex: 0,
+    combo: DIM_COMBOS[0],
   };
+}
+
+// One function changes the values — everything downstream reads
+// state.combo instead of a constant, but the read sites are unchanged
+// in shape (still just three fields being consumed).
+function setDimCombo(index) {
+  if (!state) return;
+  state.comboIndex = index;
+  state.combo = DIM_COMBOS[index];
+  journal(`Dim combo -> ${index} (${JSON.stringify(state.combo)})`);
+
+  // Re-apply the new values to whatever's currently dimmed.
+  // applyDimEffects already knows how to add/update/remove each
+  // effect based on the values it reads, so calling it again per
+  // actor is enough — no separate "update" path needed.
+  for (const actor of state.dimmed)
+    applyDimEffects(actor);
 }
 
 // ===== queries (unchanged) =====
@@ -110,18 +129,20 @@ function isCoveredFullyOrPartially(window) {
 // ===== Dimming functions (no animation) =====
 
 function applyDimEffects(actor) {
+  const { opacity, brightness, desaturation } = state.combo;
+
   // Opacity
-  actor.opacity = UNFOCUSED_OPACITY;
+  actor.opacity = opacity;
 
   // Brightness (darkness)
   let brightnessEffect = state.brightnessEffectByActor.get(actor);
-  if (UNFOCUSED_BRIGHTNESS !== 0.0) {
+  if (brightness !== 0.0) {
     if (!brightnessEffect) {
       brightnessEffect = new Clutter.BrightnessContrastEffect();
       actor.add_effect(brightnessEffect);
       state.brightnessEffectByActor.set(actor, brightnessEffect);
     }
-    brightnessEffect.set_brightness(UNFOCUSED_BRIGHTNESS);
+    brightnessEffect.set_brightness(brightness);
   } else if (brightnessEffect) {
     actor.remove_effect(brightnessEffect);
     state.brightnessEffectByActor.delete(actor);
@@ -129,13 +150,13 @@ function applyDimEffects(actor) {
 
   // Desaturation
   let desatEffect = state.desatEffectByActor.get(actor);
-  if (UNFOCUSED_DESATURATION > 0.0) {
+  if (desaturation > 0.0) {
     if (!desatEffect) {
-      desatEffect = new Clutter.DesaturateEffect({ factor: UNFOCUSED_DESATURATION });
+      desatEffect = new Clutter.DesaturateEffect({ factor: desaturation });
       actor.add_effect(desatEffect);
       state.desatEffectByActor.set(actor, desatEffect);
     } else {
-      desatEffect.factor = UNFOCUSED_DESATURATION;
+      desatEffect.factor = desaturation;
     }
   } else if (desatEffect) {
     actor.remove_effect(desatEffect);
@@ -162,13 +183,11 @@ function removeDimEffects(actor) {
 }
 
 function dimFocus(win, others) {
-  // Reset focused window
   const focusedActor = win?.get_compositor_private();
   if (focusedActor) {
     removeDimEffects(focusedActor);
   }
 
-  // Apply dimming to others (instant)
   for (const otherWin of others) {
     const actor = otherWin.get_compositor_private();
     if (!actor) continue;
@@ -408,6 +427,66 @@ function policyDestroy() {
   }
 }
 
+// ===== panel indicator (cycles the dim combo) =====
+
+const BIN_SIZE = 64;
+
+class DimLevelIndicator extends PanelMenu.Button {
+  static {
+    GObject.registerClass(this);
+  }
+
+  constructor(extensionPath) {
+    super(0.0, 'DimLevelIndicator');
+
+    this._extensionPath = extensionPath;
+
+    this._icon = new St.Icon({
+      icon_size: 64,
+      style_class: 'system-status-icon',
+    });
+
+    this._iconBin = new St.Bin({
+      child: this._icon,
+      style_class: 'lamp-icon-bin',
+      width: BIN_SIZE,
+      height: BIN_SIZE,
+      x_align: Clutter.ActorAlign.CENTER,
+      y_align: Clutter.ActorAlign.CENTER,
+    });
+    this.add_child(this._iconBin);
+
+    this._syncIconToCombo(state.comboIndex);
+
+    this.connect('button-press-event', (actor, event) => {
+      const button = event.get_button();
+      if (button === Clutter.BUTTON_PRIMARY) {
+        const nextIndex = (state.comboIndex + 1) % DIM_COMBOS.length;
+        setDimCombo(nextIndex);
+        this._syncIconToCombo(nextIndex);
+      }
+      return Clutter.EVENT_STOP;
+    });
+  }
+
+  _syncIconToCombo(index) {
+    const combo = DIM_COMBOS[index];
+    const iconPath = GLib.build_filenamev([this._extensionPath, 'icons', combo.iconFile]);
+    const file = Gio.File.new_for_path(iconPath);
+
+    if (!file.query_exists(null)) {
+      journal(`Icon file not found: ${iconPath}`);
+      return;
+    }
+
+    this._icon.gicon = new Gio.FileIcon({ file });
+
+    for (const c of DIM_COMBOS)
+      this._iconBin.remove_style_class_name(c.cssClass);
+    this._iconBin.add_style_class_name(combo.cssClass);
+  }
+}
+
 // ===== extension =====
 
 export default class FocusedWindowManagerExtension extends Extension {
@@ -428,6 +507,9 @@ export default class FocusedWindowManagerExtension extends Extension {
       [Display, 'restacked', this.onRestacked.bind(this)],
     ].map(([obj, signal, handler]) => [obj, obj.connect(signal, handler)]);
 
+    this._indicator = new DimLevelIndicator(this.path);
+    Main.panel.addToStatusArea(`${this.uuid}-indicator`, this._indicator);
+
     refreshDimming();
     borderUpdate();
   }
@@ -436,6 +518,9 @@ export default class FocusedWindowManagerExtension extends Extension {
     for (const [obj, id] of this._connections)
       obj.disconnect(id);
     this._connections = null;
+
+    this._indicator?.destroy();
+    this._indicator = null;
 
     undimAll();
     borderDestroy();
