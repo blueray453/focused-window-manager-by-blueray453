@@ -102,19 +102,16 @@ function isCoveredFullyOrPartially(window) {
 
 // ===== Dimming functions =====
 
-function applyDimEffects(actor, opacity, brightness, desatFactor) {
-  // Opacity is set directly; animation is done in dimFocus
-  actor.opacity = opacity;
-
+function applyDimEffects(actor) {
   // Brightness (darkness)
   let brightnessEffect = state.brightnessEffectByActor.get(actor);
-  if (brightness !== 0.0) {
+  if (UNFOCUSED_BRIGHTNESS !== 0.0) {
     if (!brightnessEffect) {
       brightnessEffect = new Clutter.BrightnessContrastEffect();
       actor.add_effect(brightnessEffect);
       state.brightnessEffectByActor.set(actor, brightnessEffect);
     }
-    brightnessEffect.set_brightness(brightness);
+    brightnessEffect.set_brightness(UNFOCUSED_BRIGHTNESS);
   } else if (brightnessEffect) {
     actor.remove_effect(brightnessEffect);
     state.brightnessEffectByActor.delete(actor);
@@ -122,13 +119,13 @@ function applyDimEffects(actor, opacity, brightness, desatFactor) {
 
   // Desaturation
   let desatEffect = state.desatEffectByActor.get(actor);
-  if (desatFactor > 0.0) {
+  if (UNFOCUSED_DESATURATION > 0.0) {
     if (!desatEffect) {
-      desatEffect = new Clutter.DesaturateEffect({ factor: desatFactor });
+      desatEffect = new Clutter.DesaturateEffect({ factor: UNFOCUSED_DESATURATION });
       actor.add_effect(desatEffect);
       state.desatEffectByActor.set(actor, desatEffect);
     } else {
-      desatEffect.factor = desatFactor;
+      desatEffect.factor = UNFOCUSED_DESATURATION;
     }
   } else if (desatEffect) {
     actor.remove_effect(desatEffect);
@@ -153,17 +150,20 @@ function removeDimEffects(actor) {
 }
 
 function dimFocus(win, others) {
+  // Reset focused window
   const focusedActor = win?.get_compositor_private();
   if (focusedActor) {
     removeDimEffects(focusedActor);
     state.dimmed.delete(focusedActor);
   }
 
+  // Dim others
   for (const otherWin of others) {
     const actor = otherWin.get_compositor_private();
     if (!actor) continue;
 
-    applyDimEffects(actor, UNFOCUSED_OPACITY, UNFOCUSED_BRIGHTNESS, UNFOCUSED_DESATURATION);
+    applyDimEffects(actor);  // apply brightness & desaturation
+
     actor.remove_all_transitions();
     actor.ease({
       opacity: UNFOCUSED_OPACITY,
@@ -476,7 +476,7 @@ export default class FocusedWindowManagerExtension extends Extension {
 
   onWorkspaceChanged() {
     scheduleReevaluate({ restoreMinimized: true });
-    refreshDimming();   // <-- dimming updated on workspace switch
+    refreshDimming();
     borderUpdate();
   }
 
@@ -493,7 +493,7 @@ export default class FocusedWindowManagerExtension extends Extension {
 
   onWindowDestroyed(wm, actor) {
     borderRemoveIfMatches(actor);
-    state.dimmed.delete(actor);  // clean up
+    state.dimmed.delete(actor);
     scheduleReevaluate();
     refreshDimming();
     borderUpdate();
