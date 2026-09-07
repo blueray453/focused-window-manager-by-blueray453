@@ -13,6 +13,8 @@ const WorkspaceManager = global.get_workspace_manager();
 const UNFOCUSED_OPACITY = 204;          // 80% of 255
 const UNFOCUSED_BRIGHTNESS = -0.1;      // 10% darkness
 const UNFOCUSED_DESATURATION = 1.0;     // fully desaturated
+
+// (Unused, kept for reference)
 const FADE_DURATION = 350;
 
 import {
@@ -100,10 +102,10 @@ function isCoveredFullyOrPartially(window) {
   return false;
 }
 
-// ===== Dimming functions =====
+// ===== Dimming functions (no animation) =====
 
 function applyDimEffects(actor) {
-  // Opacity – set directly (no animation)
+  // Opacity
   actor.opacity = UNFOCUSED_OPACITY;
 
   // Brightness (darkness)
@@ -161,11 +163,11 @@ function dimFocus(win, others) {
     removeDimEffects(focusedActor);
   }
 
-  // Dim others
+  // Apply dimming to others (instant)
   for (const otherWin of others) {
     const actor = otherWin.get_compositor_private();
     if (!actor) continue;
-    applyDimEffects(actor);   // sets opacity, brightness, desat
+    applyDimEffects(actor);
   }
 }
 
@@ -186,25 +188,6 @@ function refreshDimming() {
   } else {
     undimAll();
   }
-}
-
-// ===== reveal animation (unchanged) =====
-
-const ANIMATIONS_ENABLED = true;
-
-function reveal(win) {
-  if (!ANIMATIONS_ENABLED) return;
-  const actor = win?.get_compositor_private();
-  if (!actor) return;
-  actor.set_pivot_point(0.5, 0.5);
-  actor.remove_all_transitions();
-  actor.set_scale(0, 0);
-  actor.ease({
-    scale_x: 1,
-    scale_y: 1,
-    duration: FADE_DURATION,
-    mode: Clutter.AnimationMode.EASE_OUT,
-  });
 }
 
 // ===== border (unchanged) =====
@@ -322,7 +305,7 @@ function borderDestroy() {
   focusedBorder.destroy();
 }
 
-// ===== focus policy (unchanged, now calls refreshDimming) =====
+// ===== focus policy (calls refreshDimming, no reveal) =====
 
 function scheduleReevaluate(options = {}) {
   state.reevalRestoreMinimized =
@@ -368,8 +351,6 @@ function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = nul
       win.maximize(3);
     win.get_workspace().activate_with_focus(win, global.get_current_time());
     refreshDimming();
-    if (wasMinimized || (!wasMaximized && shouldForceMaximize))
-      reveal(win);
     borderUpdate();
     return;
   }
@@ -389,7 +370,6 @@ function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = nul
     other.maximize(3);
     other.get_workspace().activate_with_focus(other, global.get_current_time());
     refreshDimming();
-    reveal(other);
     borderUpdate();
     return;
   }
