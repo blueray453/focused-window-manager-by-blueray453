@@ -11,7 +11,6 @@ const WorkspaceManager = global.get_workspace_manager();
 
 const UNFOCUSED_OPACITY = 252; // out of 255 - tune to taste
 const FADE_DURATION = 350;
-const FOCUSED_BORDER_CLASS = 'focused-border';
 
 import {
   initLogging,
@@ -186,105 +185,139 @@ function reveal(win) {
 
 // ===== border (plain functions over state.border*) =====
 
-function borderDisconnectSignals() {
-  const win = state.borderActor?.get_meta_window();
+const FOCUSED_BORDER_CLASS = 'focused-border';
+const ACTIVATED_BORDER_CLASS = 'activated-border';
 
-  if (win) {
-    for (const id of state.borderSignals) {
-      if (id)
-        win.disconnect(id);
+const focusedBorder = makeBorderTracker(FOCUSED_BORDER_CLASS);
+const activatedBorder = makeBorderTracker(ACTIVATED_BORDER_CLASS);
+
+function makeBorderTracker(cssClass) {
+  let border = null;
+  let trackedActor = null;
+  let signals = [];
+  let updateId = 0;
+
+  function disconnectSignals() {
+    const win = trackedActor?.get_meta_window();
+    if (win) {
+      for (const id of signals) {
+        if (id) win.disconnect(id);
+      }
     }
+    signals = [];
   }
 
-  state.borderSignals = [];
-}
-
-function borderRemove() {
-  borderDisconnectSignals();
-
-  if (state.border?.get_parent())
-    state.border.get_parent().remove_child(state.border);
-  if (state.border) {
-    state.border.destroy();
-    state.border = null;
+  function remove() {
+    disconnectSignals();
+    if (border?.get_parent())
+      border.get_parent().remove_child(border);
+    if (border) {
+      border.destroy();
+      border = null;
+    }
+    trackedActor = null;
   }
 
-  state.borderActor = null;
-}
+  function restack() {
+    if (!border || !trackedActor || !border.get_parent())
+      return;
+    global.get_window_group().set_child_above_sibling(border, trackedActor);
+  }
 
-// Removes the border only if it currently belongs to `actor` - used from
-// 'destroy'/'minimize' handlers that only know the actor, not whether
-// it's the one wearing the border.
-function borderRemoveIfMatches(actor) {
-  if (actor === state.borderActor)
-    borderRemove();
-}
+  function scheduleUpdate(win) {
+    if (updateId)
+      return;
+    updateId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+      updateId = 0;
+      update(win);
+      return GLib.SOURCE_REMOVE;
+    });
+  }
 
-function borderRestack() {
-  if (!state.border || !state.borderActor || !state.border.get_parent())
-    return;
+  function update(win) {
+    if (!win) {
+      remove();
+      return;
+    }
 
-  global.get_window_group().set_child_above_sibling(state.border, state.borderActor);
+    const actor = win.get_compositor_private();
+    if (!actor || !actor.get_parent()) {
+      remove();
+      return;
+    }
+
+    if (trackedActor !== actor) {
+      remove();
+      border = new St.Bin({ style_class: cssClass, reactive: false });
+      trackedActor = actor;
+
+      const onGeometryChanged = () => scheduleUpdate(win);
+      signals = [
+        win.connect('position-changed', onGeometryChanged),
+        win.connect('size-changed', onGeometryChanged),
+        win.connect('workspace-changed', onGeometryChanged),
+      ];
+
+      actor.get_parent().add_child(border);
+      restack();
+    }
+
+    const rect = win.get_frame_rect();
+    border.set_position(rect.x, rect.y);
+    border.set_size(rect.width, rect.height);
+    restack();
+  }
+
+  function removeIfActorMatches(actor) {
+    if (actor === trackedActor)
+      remove();
+  }
+
+  function destroy() {
+    if (updateId) {
+      GLib.Source.remove(updateId);
+      updateId = 0;
+    }
+    remove();
+  }
+
+  return { update, remove, restack, removeIfActorMatches, destroy };
 }
 
 function borderUpdate() {
   const win = Display.get_focus_window();
 
   if (!isEligible(win)) {
-    borderRemove();
+    focusedBorder.remove();
+    activatedBorder.remove();
     return;
   }
 
-  const actor = win.get_compositor_private();
+  focusedBorder.update(win); // win === Display.focus_window, so it's always genuinely focused
 
-  if (!actor || !actor.get_parent()) {
-    borderRemove();
-    return;
-  }
+  const parent = win.get_transient_for();
+  const parentAppearsActivated =
+    parent && isEligible(parent) && parent.appears_focused() && !parent.has_focus();
 
-  if (state.borderActor !== actor) {
-    borderRemove();
-
-    state.border = new St.Bin({
-      style_class: FOCUSED_BORDER_CLASS,
-      reactive: false,
-    });
-    state.borderActor = actor;
-
-    const onGeometryChanged = () => borderScheduleUpdate();
-    state.borderSignals = [
-      win.connect('position-changed', onGeometryChanged),
-      win.connect('size-changed', onGeometryChanged),
-      win.connect('workspace-changed', onGeometryChanged),
-    ];
-
-    actor.get_parent().add_child(state.border);
-    borderRestack();
-  }
-
-  const rect = win.get_frame_rect();
-  state.border.set_position(rect.x, rect.y);
-  state.border.set_size(rect.width, rect.height);
-  borderRestack();
+  if (parentAppearsActivated)
+    activatedBorder.update(parent);
+  else
+    activatedBorder.remove();
 }
 
-function borderScheduleUpdate() {
-  if (state.borderUpdateId)
-    return;
+function borderRestack() {
+  focusedBorder.restack();
+  activatedBorder.restack();
+}
 
-  state.borderUpdateId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
-    state.borderUpdateId = 0;
-    borderUpdate();
-    return GLib.SOURCE_REMOVE;
-  });
+function borderRemoveIfMatches(actor) {
+  focusedBorder.removeIfActorMatches(actor);
+  activatedBorder.removeIfActorMatches(actor);
 }
 
 function borderDestroy() {
-  if (state.borderUpdateId) {
-    GLib.Source.remove(state.borderUpdateId);
-    state.borderUpdateId = 0;
-  }
-  borderRemove();
+  focusedBorder.destroy();
+  activatedBorder.destroy();
 }
 
 // ===== focus policy (plain functions over state.reeval*) =====
