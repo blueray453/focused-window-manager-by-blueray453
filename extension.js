@@ -10,12 +10,9 @@ const WindowManager = global.get_window_manager();
 const WorkspaceManager = global.get_workspace_manager();
 
 // ===== Hardcoded inactive window style =====
-const UNFOCUSED_OPACITY = 204;          // 80% of 255
-const UNFOCUSED_BRIGHTNESS = -0.1;      // 10% darkness
-const UNFOCUSED_DESATURATION = 1.0;     // fully desaturated
-
-// (Unused, kept for reference)
-const FADE_DURATION = 350;
+const UNFOCUSED_OPACITY = 204;          // Range: 0–255 (integer)
+const UNFOCUSED_BRIGHTNESS = -0.1;      // Range: -1.0 to 1.0 (floating point)
+const UNFOCUSED_DESATURATION = 1.0;     // Range: 0.0 to 1.0 (floating point)
 
 import {
   initLogging,
