@@ -508,7 +508,7 @@ export default class FocusedWindowManagerExtension extends Extension {
     ].map(([obj, signal, handler]) => [obj, obj.connect(signal, handler)]);
 
     this._indicator = new DimLevelIndicator(this.path);
-    Main.panel.addToStatusArea(`${this.uuid}-indicator`, this._indicator);
+    Main.panel.addToStatusArea(`${this.uuid}`, this._indicator);
 
     refreshDimming();
     borderUpdate();
