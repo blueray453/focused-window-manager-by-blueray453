@@ -206,7 +206,7 @@ function flushBuffer() {
         stream.write_all(new TextEncoder().encode(lines.join('\n') + '\n'), null);
         stream.close(null);
     } catch (e) {
-        console.error(`[state.uuid]Logflushfailed:{state.uuid}] Log flush failed:state.uuid]Logflushfailed:{e}`);
+        console.error(`[${state.uuid}] Log flush failed: ${e}`);
     }
 }
 
@@ -234,7 +234,7 @@ function createLogger(source) {
         if (!state?.enabled) return;                      // 1. master switch
         if (state.levels[level] > state.levels[state.level]) return;  // 2. level filter
 
-        const output = `[level][{level}] [level][${sourceFile}] ${msg}`;
+        const output = `[${level}] [${sourceFile}] ${msg}`;
 
         if (state.output === 'journal' || state.output === 'both')
             writeToJournal(output, level);
