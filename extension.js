@@ -67,8 +67,7 @@ function scheduleFlush(work) {
   if (work.reevaluate) p.reevaluate = true;
   if (work.restoreMinimized) p.restoreMinimized = true;
   if (work.justMinimizedWindow) p.justMinimizedWindow = work.justMinimizedWindow;
-  if (work.dimming) p.dimming = true;
-  if (work.border) p.border = true;
+  if (work.refresh) p.refresh = true;
 
   if (state.flushId)
     return;
@@ -86,16 +85,13 @@ function flushPending() {
   if (!state || !state.pending)
     return;
 
-  const { reevaluate, restoreMinimized, justMinimizedWindow, dimming, border } = state.pending;
+  const { reevaluate, restoreMinimized, justMinimizedWindow, refresh } = state.pending;
   state.pending = null;
 
-  if (reevaluate) {
-    // ensureFocusedWindow will call refreshState() after changing focus
+  if (reevaluate)
     ensureFocusedWindow(!!restoreMinimized, justMinimizedWindow ?? null);
-  } else {
-    // For pure dimming/border updates, just refresh the visual state
-    if (dimming || border) refreshState();
-  }
+  else if (refresh)
+    refreshState();
 }
 
 function cancelFlush() {
@@ -223,31 +219,38 @@ function undimAll() {
   state.dimmed.clear();
 }
 
-// ===== UNIFIED refreshState (replaces refreshDimming + borderUpdate) =====
+// ===== unified refresh (diff-based: only touches actors that need to change) =====
 
 function refreshState() {
-  // 1. Remove all dimming effects from every actor
-  undimAll();
-
-  // 2. Remove any existing border
-  focusedBorder.remove();
-
-  // 3. Determine current focus and eligible windows on current workspace
   const focusWin = Display.get_focus_window();
   const eligible = windowsOnCurrentWorkspace().filter(isEligible);
 
-  if (focusWin && eligible.includes(focusWin)) {
-    // Dim all other eligible windows
-    const others = eligible.filter(w => w !== focusWin);
-    for (const other of others) {
-      const actor = other.get_compositor_private();
-      if (actor) applyDimEffects(actor);
-    }
-
-    // Add border to the focused window
-    focusedBorder.update(focusWin);
+  if (!focusWin || !eligible.includes(focusWin)) {
+    undimAll();
+    focusedBorder.remove();
+    return;
   }
-  // else: no valid focus → nothing to dim/border (already cleaned up)
+
+  const focusedActor = focusWin.get_compositor_private();
+  if (focusedActor) removeDimEffects(focusedActor);
+
+  const others = eligible.filter(w => w !== focusWin);
+  const othersActors = new Set();
+  for (const other of others) {
+    const actor = other.get_compositor_private();
+    if (!actor) continue;
+    othersActors.add(actor);
+    applyDimEffects(actor); // cheap if already dimmed: reuses cached effect objects
+  }
+
+  // Sweep out anything still marked dimmed that shouldn't be
+  // (moved workspace, minimized, or left over from a prior state).
+  for (const actor of [...state.dimmed]) {
+    if (actor !== focusedActor && !othersActors.has(actor))
+      removeDimEffects(actor);
+  }
+
+  focusedBorder.update(focusWin); // internal diff: only rebuilds if the tracked window changed
 }
 
 // ===== border =====
@@ -302,7 +305,7 @@ function makeBorderTracker(cssClass) {
       remove();
       border = new St.Bin({ style_class: cssClass, reactive: false });
       trackedActor = actor;
-      const onGeometryChanged = () => scheduleFlush({ border: true });
+      const onGeometryChanged = () => scheduleFlush({ refresh: true });
       signals = [
         win.connect('position-changed', onGeometryChanged),
         win.connect('size-changed', onGeometryChanged),
@@ -347,7 +350,7 @@ function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = nul
   const allWindows = windowsOnCurrentWorkspace();
   if (allWindows.length === 0) {
     state.lastSoloWindow = null;
-    refreshState(); // ← updated: call unified refresh
+    refreshState();
     return;
   }
   const visible = allWindows.filter(w => !w.minimized);
@@ -357,7 +360,7 @@ function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = nul
     const isNewSoloState = state.lastSoloWindow !== win;
     state.lastSoloWindow = win;
     if (win.minimized && !restoreMinimized) {
-      refreshState(); // ← updated
+      refreshState();
       return;
     }
     const wasMinimized = win.minimized;
@@ -368,7 +371,7 @@ function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = nul
     if (!wasMaximized && shouldForceMaximize)
       win.maximize(3);
     win.get_workspace().activate_with_focus(win, global.get_current_time());
-    refreshState(); // ← updated
+    refreshState();
     return;
   }
 
@@ -376,7 +379,7 @@ function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = nul
 
   if (visible.length === 0 && allWindows.length === 2) {
     if (!justMinimizedWindow && !restoreMinimized) {
-      refreshState(); // ← updated
+      refreshState();
       return;
     }
     const other = justMinimizedWindow
@@ -386,17 +389,17 @@ function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = nul
     other.unminimize();
     other.maximize(3);
     other.get_workspace().activate_with_focus(other, global.get_current_time());
-    refreshState(); // ← updated
+    refreshState();
     return;
   }
 
   if (visible.length === 0) {
-    refreshState(); // ← updated
+    refreshState();
     return;
   }
   const uncovered = visible.filter(w => !isCoveredFullyOrPartially(w));
   if (uncovered.length === 0) {
-    refreshState(); // ← updated
+    refreshState();
     return;
   }
   let target;
@@ -408,7 +411,7 @@ function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = nul
     );
   }
   target.get_workspace().activate_with_focus(target, global.get_current_time());
-  refreshState(); // ← updated
+  refreshState();
 }
 
 // ===== panel indicator =====
@@ -494,7 +497,6 @@ export default class FocusedWindowManagerExtension extends Extension {
     this._indicator = new DimLevelIndicator(this.path);
     Main.panel.addToStatusArea(`${this.uuid}`, this._indicator);
 
-    // Initial state
     refreshState();
   }
 
@@ -518,7 +520,7 @@ export default class FocusedWindowManagerExtension extends Extension {
   // ---- signal handlers ----
 
   onFocusWindowChanged() {
-    scheduleFlush({ dimming: true, border: true });
+    scheduleFlush({ refresh: true });
   }
 
   onWorkspaceChanged() {
@@ -546,7 +548,7 @@ export default class FocusedWindowManagerExtension extends Extension {
   }
 
   onRestacked() {
-    borderRestack(); // cheap and synchronous, no need to defer
+    borderRestack();
     scheduleFlush({ reevaluate: true });
   }
 }
