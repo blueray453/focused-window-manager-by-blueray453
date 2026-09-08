@@ -42,10 +42,7 @@ function initState() {
     comboIndex: 0,
     combo: DIM_COMBOS[0],
 
-    // ===== flush buffer =====
-    // Every caller just describes *what* needs doing (reevaluate, refresh
-    // dimming, refresh the border...); the actual work happens once, on
-    // the next idle tick, no matter how many callers asked in between.
+    // flush buffer
     pending: null,
     flushId: 0,
   };
@@ -61,7 +58,7 @@ function setDimCombo(index) {
     applyDimEffects(actor);
 }
 
-// ===== flush buffer (replaces the old reevalId / border updateId pair) =====
+// ===== flush buffer =====
 
 function scheduleFlush(work) {
   if (!state) return;
@@ -93,14 +90,12 @@ function flushPending() {
   state.pending = null;
 
   if (reevaluate) {
-    // ensureFocusedWindow already calls refreshDimming()/borderUpdate()
-    // internally on every code path, so a plain dimming/border flag
-    // alongside it would just be redundant work.
+    // ensureFocusedWindow will call refreshState() after changing focus
     ensureFocusedWindow(!!restoreMinimized, justMinimizedWindow ?? null);
-    return;
+  } else {
+    // For pure dimming/border updates, just refresh the visual state
+    if (dimming || border) refreshState();
   }
-  if (dimming) refreshDimming();
-  if (border) borderUpdate();
 }
 
 function cancelFlush() {
@@ -112,7 +107,7 @@ function cancelFlush() {
   state.pending = null;
 }
 
-// ===== queries (unchanged) =====
+// ===== queries =====
 
 function windowExistsOnCurrentWorkspace(win) {
   if (!win) return false;
@@ -221,19 +216,6 @@ function removeDimEffects(actor) {
   state.dimmed.delete(actor);
 }
 
-function dimFocus(win, others) {
-  const focusedActor = win?.get_compositor_private();
-  if (focusedActor) {
-    removeDimEffects(focusedActor);
-  }
-
-  for (const otherWin of others) {
-    const actor = otherWin.get_compositor_private();
-    if (!actor) continue;
-    applyDimEffects(actor);
-  }
-}
-
 function undimAll() {
   for (const actor of state.dimmed) {
     removeDimEffects(actor);
@@ -241,16 +223,31 @@ function undimAll() {
   state.dimmed.clear();
 }
 
-function refreshDimming() {
+// ===== UNIFIED refreshState (replaces refreshDimming + borderUpdate) =====
+
+function refreshState() {
+  // 1. Remove all dimming effects from every actor
+  undimAll();
+
+  // 2. Remove any existing border
+  focusedBorder.remove();
+
+  // 3. Determine current focus and eligible windows on current workspace
   const focusWin = Display.get_focus_window();
   const eligible = windowsOnCurrentWorkspace().filter(isEligible);
 
   if (focusWin && eligible.includes(focusWin)) {
+    // Dim all other eligible windows
     const others = eligible.filter(w => w !== focusWin);
-    dimFocus(focusWin, others);
-  } else {
-    undimAll();
+    for (const other of others) {
+      const actor = other.get_compositor_private();
+      if (actor) applyDimEffects(actor);
+    }
+
+    // Add border to the focused window
+    focusedBorder.update(focusWin);
   }
+  // else: no valid focus → nothing to dim/border (already cleaned up)
 }
 
 // ===== border =====
@@ -305,9 +302,6 @@ function makeBorderTracker(cssClass) {
       remove();
       border = new St.Bin({ style_class: cssClass, reactive: false });
       trackedActor = actor;
-      // Geometry changes are cheap to redraw (just set_position/set_size
-      // on an St.Bin), so route them through the shared flush queue
-      // instead of keeping a private idle source per-tracker.
       const onGeometryChanged = () => scheduleFlush({ border: true });
       signals = [
         win.connect('position-changed', onGeometryChanged),
@@ -335,15 +329,6 @@ function makeBorderTracker(cssClass) {
   return { update, remove, restack, removeIfActorMatches, destroy };
 }
 
-function borderUpdate() {
-  const win = Display.get_focus_window();
-  if (!isEligible(win)) {
-    focusedBorder.remove();
-    return;
-  }
-  focusedBorder.update(win);
-}
-
 function borderRestack() {
   focusedBorder.restack();
 }
@@ -362,7 +347,7 @@ function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = nul
   const allWindows = windowsOnCurrentWorkspace();
   if (allWindows.length === 0) {
     state.lastSoloWindow = null;
-    refreshDimming();
+    refreshState(); // ← updated: call unified refresh
     return;
   }
   const visible = allWindows.filter(w => !w.minimized);
@@ -372,7 +357,7 @@ function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = nul
     const isNewSoloState = state.lastSoloWindow !== win;
     state.lastSoloWindow = win;
     if (win.minimized && !restoreMinimized) {
-      refreshDimming();
+      refreshState(); // ← updated
       return;
     }
     const wasMinimized = win.minimized;
@@ -383,8 +368,7 @@ function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = nul
     if (!wasMaximized && shouldForceMaximize)
       win.maximize(3);
     win.get_workspace().activate_with_focus(win, global.get_current_time());
-    refreshDimming();
-    borderUpdate();
+    refreshState(); // ← updated
     return;
   }
 
@@ -392,7 +376,7 @@ function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = nul
 
   if (visible.length === 0 && allWindows.length === 2) {
     if (!justMinimizedWindow && !restoreMinimized) {
-      refreshDimming();
+      refreshState(); // ← updated
       return;
     }
     const other = justMinimizedWindow
@@ -402,18 +386,17 @@ function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = nul
     other.unminimize();
     other.maximize(3);
     other.get_workspace().activate_with_focus(other, global.get_current_time());
-    refreshDimming();
-    borderUpdate();
+    refreshState(); // ← updated
     return;
   }
 
   if (visible.length === 0) {
-    refreshDimming();
+    refreshState(); // ← updated
     return;
   }
   const uncovered = visible.filter(w => !isCoveredFullyOrPartially(w));
   if (uncovered.length === 0) {
-    refreshDimming();
+    refreshState(); // ← updated
     return;
   }
   let target;
@@ -425,11 +408,10 @@ function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = nul
     );
   }
   target.get_workspace().activate_with_focus(target, global.get_current_time());
-  refreshDimming();
-  borderUpdate();
+  refreshState(); // ← updated
 }
 
-// ===== panel indicator (cycles the dim combo) =====
+// ===== panel indicator =====
 
 const BIN_SIZE = 64;
 
@@ -512,8 +494,8 @@ export default class FocusedWindowManagerExtension extends Extension {
     this._indicator = new DimLevelIndicator(this.path);
     Main.panel.addToStatusArea(`${this.uuid}`, this._indicator);
 
-    refreshDimming();
-    borderUpdate();
+    // Initial state
+    refreshState();
   }
 
   disable() {
