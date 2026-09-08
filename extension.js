@@ -23,8 +23,6 @@ import {
 const journal = createLogger(import.meta.url);
 
 // ===== dim combos (low -> high intensity) =====
-// Replaces the three standalone UNFOCUSED_* consts. Same meaning,
-// same ranges — just grouped so one index can select all three at once.
 const DIM_COMBOS = [
   { opacity: 255, brightness: 0.0, desaturation: 0.0, iconFile: 'icon1-symbolic.svg', cssClass: 'lamp-level-1' },
   { opacity: 255, brightness: -0.2, desaturation: 0.0, iconFile: 'icon2-symbolic.svg', cssClass: 'lamp-level-2' },
@@ -40,34 +38,78 @@ function initState() {
     dimmed: new Set(),
     brightnessEffectByActor: new WeakMap(),
     desatEffectByActor: new WeakMap(),
-    border: null,
-    borderActor: null,
-    borderSignals: [],
-    borderUpdateId: 0,
-    reevalId: 0,
-    reevalRestoreMinimized: false,
-    reevalJustMinimizedWindow: null,
     lastSoloWindow: null,
     comboIndex: 0,
     combo: DIM_COMBOS[0],
+
+    // ===== flush buffer =====
+    // Every caller just describes *what* needs doing (reevaluate, refresh
+    // dimming, refresh the border...); the actual work happens once, on
+    // the next idle tick, no matter how many callers asked in between.
+    pending: null,
+    flushId: 0,
   };
 }
 
-// One function changes the values — everything downstream reads
-// state.combo instead of a constant, but the read sites are unchanged
-// in shape (still just three fields being consumed).
 function setDimCombo(index) {
   if (!state) return;
   state.comboIndex = index;
   state.combo = DIM_COMBOS[index];
   journal(`Dim combo -> ${index} (${JSON.stringify(state.combo)})`);
 
-  // Re-apply the new values to whatever's currently dimmed.
-  // applyDimEffects already knows how to add/update/remove each
-  // effect based on the values it reads, so calling it again per
-  // actor is enough — no separate "update" path needed.
   for (const actor of state.dimmed)
     applyDimEffects(actor);
+}
+
+// ===== flush buffer (replaces the old reevalId / border updateId pair) =====
+
+function scheduleFlush(work) {
+  if (!state) return;
+
+  const p = (state.pending ??= {});
+  if (work.reevaluate) p.reevaluate = true;
+  if (work.restoreMinimized) p.restoreMinimized = true;
+  if (work.justMinimizedWindow) p.justMinimizedWindow = work.justMinimizedWindow;
+  if (work.dimming) p.dimming = true;
+  if (work.border) p.border = true;
+
+  if (state.flushId)
+    return;
+
+  state.flushId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+    if (state) {
+      state.flushId = 0;
+      flushPending();
+    }
+    return GLib.SOURCE_REMOVE;
+  });
+}
+
+function flushPending() {
+  if (!state || !state.pending)
+    return;
+
+  const { reevaluate, restoreMinimized, justMinimizedWindow, dimming, border } = state.pending;
+  state.pending = null;
+
+  if (reevaluate) {
+    // ensureFocusedWindow already calls refreshDimming()/borderUpdate()
+    // internally on every code path, so a plain dimming/border flag
+    // alongside it would just be redundant work.
+    ensureFocusedWindow(!!restoreMinimized, justMinimizedWindow ?? null);
+    return;
+  }
+  if (dimming) refreshDimming();
+  if (border) borderUpdate();
+}
+
+function cancelFlush() {
+  if (!state) return;
+  if (state.flushId) {
+    GLib.Source.remove(state.flushId);
+    state.flushId = 0;
+  }
+  state.pending = null;
 }
 
 // ===== queries (unchanged) =====
@@ -131,10 +173,8 @@ function isCoveredFullyOrPartially(window) {
 function applyDimEffects(actor) {
   const { opacity, brightness, desaturation } = state.combo;
 
-  // Opacity
   actor.opacity = opacity;
 
-  // Brightness (darkness)
   let brightnessEffect = state.brightnessEffectByActor.get(actor);
   if (brightness !== 0.0) {
     if (!brightnessEffect) {
@@ -148,7 +188,6 @@ function applyDimEffects(actor) {
     state.brightnessEffectByActor.delete(actor);
   }
 
-  // Desaturation
   let desatEffect = state.desatEffectByActor.get(actor);
   if (desaturation > 0.0) {
     if (!desatEffect) {
@@ -214,7 +253,7 @@ function refreshDimming() {
   }
 }
 
-// ===== border (unchanged) =====
+// ===== border =====
 
 const FOCUSED_BORDER_CLASS = 'focused-border';
 
@@ -224,7 +263,6 @@ function makeBorderTracker(cssClass) {
   let border = null;
   let trackedActor = null;
   let signals = [];
-  let updateId = 0;
 
   function disconnectSignals() {
     const win = trackedActor?.get_meta_window();
@@ -253,16 +291,6 @@ function makeBorderTracker(cssClass) {
     global.get_window_group().set_child_above_sibling(border, trackedActor);
   }
 
-  function scheduleUpdate(win) {
-    if (updateId)
-      return;
-    updateId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
-      updateId = 0;
-      update(win);
-      return GLib.SOURCE_REMOVE;
-    });
-  }
-
   function update(win) {
     if (!win) {
       remove();
@@ -277,7 +305,10 @@ function makeBorderTracker(cssClass) {
       remove();
       border = new St.Bin({ style_class: cssClass, reactive: false });
       trackedActor = actor;
-      const onGeometryChanged = () => scheduleUpdate(win);
+      // Geometry changes are cheap to redraw (just set_position/set_size
+      // on an St.Bin), so route them through the shared flush queue
+      // instead of keeping a private idle source per-tracker.
+      const onGeometryChanged = () => scheduleFlush({ border: true });
       signals = [
         win.connect('position-changed', onGeometryChanged),
         win.connect('size-changed', onGeometryChanged),
@@ -298,10 +329,6 @@ function makeBorderTracker(cssClass) {
   }
 
   function destroy() {
-    if (updateId) {
-      GLib.Source.remove(updateId);
-      updateId = 0;
-    }
     remove();
   }
 
@@ -329,25 +356,7 @@ function borderDestroy() {
   focusedBorder.destroy();
 }
 
-// ===== focus policy (calls refreshDimming, no reveal) =====
-
-function scheduleReevaluate(options = {}) {
-  state.reevalRestoreMinimized =
-    state.reevalRestoreMinimized || !!options.restoreMinimized;
-  if (options.justMinimizedWindow)
-    state.reevalJustMinimizedWindow = options.justMinimizedWindow;
-  if (state.reevalId)
-    return;
-  state.reevalId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
-    state.reevalId = 0;
-    const restoreMinimized = state.reevalRestoreMinimized;
-    const justMinimizedWindow = state.reevalJustMinimizedWindow;
-    state.reevalRestoreMinimized = false;
-    state.reevalJustMinimizedWindow = null;
-    ensureFocusedWindow(restoreMinimized, justMinimizedWindow);
-    return GLib.SOURCE_REMOVE;
-  });
-}
+// ===== focus policy =====
 
 function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = null) {
   const allWindows = windowsOnCurrentWorkspace();
@@ -418,13 +427,6 @@ function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = nul
   target.get_workspace().activate_with_focus(target, global.get_current_time());
   refreshDimming();
   borderUpdate();
-}
-
-function policyDestroy() {
-  if (state.reevalId) {
-    GLib.Source.remove(state.reevalId);
-    state.reevalId = 0;
-  }
 }
 
 // ===== panel indicator (cycles the dim combo) =====
@@ -524,7 +526,7 @@ export default class FocusedWindowManagerExtension extends Extension {
 
     undimAll();
     borderDestroy();
-    policyDestroy();
+    cancelFlush();
     state = null;
 
     flushBuffer();
@@ -534,51 +536,35 @@ export default class FocusedWindowManagerExtension extends Extension {
   // ---- signal handlers ----
 
   onFocusWindowChanged() {
-    refreshDimming();
-    borderUpdate();
+    scheduleFlush({ dimming: true, border: true });
   }
 
   onWorkspaceChanged() {
-    scheduleReevaluate({ restoreMinimized: true });
-    refreshDimming();
-    borderUpdate();
+    scheduleFlush({ reevaluate: true, restoreMinimized: true });
   }
 
   onWindowCreated() {
-    scheduleReevaluate();
-    GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
-      if (state) {
-        refreshDimming();
-        borderUpdate();
-      }
-      return GLib.SOURCE_REMOVE;
-    });
+    scheduleFlush({ reevaluate: true });
   }
 
   onWindowDestroyed(wm, actor) {
     borderRemoveIfMatches(actor);
     state.dimmed.delete(actor);
-    scheduleReevaluate();
-    refreshDimming();
-    borderUpdate();
+    scheduleFlush({ reevaluate: true });
   }
 
   onWindowMinimized(wm, actor) {
-    scheduleReevaluate({ justMinimizedWindow: actor.get_meta_window() });
     borderRemoveIfMatches(actor);
     state.dimmed.delete(actor);
-    refreshDimming();
+    scheduleFlush({ reevaluate: true, justMinimizedWindow: actor.get_meta_window() });
   }
 
   onWindowUnminimized() {
-    scheduleReevaluate();
-    refreshDimming();
-    borderUpdate();
+    scheduleFlush({ reevaluate: true });
   }
 
   onRestacked() {
-    scheduleReevaluate();
-    borderRestack();
-    refreshDimming();
+    borderRestack(); // cheap and synchronous, no need to defer
+    scheduleFlush({ reevaluate: true });
   }
 }
