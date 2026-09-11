@@ -56,43 +56,22 @@ const EffectType = {
   SHADER: 'shader',
 };
 
-const BLUR_STACK_COUNT = 3;
 const DEFAULT_OPACITY = 255;
 const DEFAULT_ICON = 'applications-graphics-symbolic';
 
-function createEffects(type) {
-  switch (type) {
-    case EffectType.DESATURATE:
-      return [new Clutter.DesaturateEffect({ factor: 0.85 })];
+// ===== spec helpers =====
+// Small constructors so preset entries stay readable. Each returns a plain
+// spec object — nothing here constructs the actual Clutter effect.
+const bc = (brightness, contrast = [0, 0, 0]) => ({ type: EffectType.BRIGHTNESS_CONTRAST, brightness, contrast });
+const desat = (factor = 1.0) => ({ type: EffectType.DESATURATE, factor });
+const colorize = (tint) => ({ type: EffectType.COLORIZE, tint });
+const blur = (count = 3) => ({ type: EffectType.BLUR, count });
+const shader = () => ({ type: EffectType.SHADER });
 
-    case EffectType.BLUR:
-      return Array.from({ length: BLUR_STACK_COUNT },
-        () => new Clutter.BlurEffect());
-
-    case EffectType.BRIGHTNESS_CONTRAST: {
-      const effect = new Clutter.BrightnessContrastEffect();
-      effect.set_brightness_full(-0.12, -0.10, -0.06);
-      effect.set_contrast_full(-0.06, -0.06, -0.04);
-      return [effect];
-    }
-
-    case EffectType.COLORIZE: {
-      const effect = new Clutter.ColorizeEffect();
-      effect.set_tint(new Cogl.Color({
-        red: 0x78, green: 0x84, blue: 0x96, alpha: 0x80,
-      }));
-      return [effect];
-    }
-
-    case EffectType.SHADER:
-      return [new GrayscaleShaderEffect()];
-
-    case EffectType.NONE:
-    default:
-      return [];
-  }
-}
-
+// ===== single effect builder =====
+// Turns spec objects into freshly-constructed Clutter effect instances.
+// The only place effects are instantiated. Every preset in PRESETS flows
+// through here — there is no second path and no hidden defaults.
 function buildEffectsFromSpecs(specs) {
   const effects = [];
   for (const spec of specs) {
@@ -116,7 +95,7 @@ function buildEffectsFromSpecs(specs) {
       }
 
       case EffectType.BLUR: {
-        const n = spec.count ?? BLUR_STACK_COUNT;
+        const n = spec.count ?? 3;
         for (let i = 0; i < n; i++)
           effects.push(new Clutter.BlurEffect());
         break;
@@ -142,91 +121,124 @@ function buildEffectsFromSpecs(specs) {
 }
 
 // ===== master preset registry — the single source of truth =====
+// Every parameter that affects what a preset looks like lives here. There is
+// no second table, no hidden default, no type-shorthand that reads from
+// somewhere else. Lamps and the menu are both views onto this list.
+//
+// A preset has:
+//   id       — unique key
+//   label    — menu text
+//   group    — used only for menu separators
+//   opacity  — 0–255
+//   effects  — [spec, ...] built by the helpers above
 const PRESETS = [
   // ---- lamp slots (referenced by LAMP_PRESETS below) ----------------------
-  { id: 'none', label: 'None', opacity: 255, effects: [] },
+  {
+    id: 'none', label: 'None', opacity: 255,
+    effects: [],
+  },
   {
     id: 'lamp-dim', label: 'Lamp · Dim', opacity: 255,
-    effects: [
-      {
-        type: EffectType.BRIGHTNESS_CONTRAST,
-        brightness: [-0.2, -0.2, -0.2], contrast: [0, 0, 0]
-      },
-    ],
+    effects: [bc([-0.2, -0.2, -0.2])],
   },
   {
     id: 'lamp-focus', label: 'Lamp · Focus', opacity: 204,
-    effects: [
-      {
-        type: EffectType.BRIGHTNESS_CONTRAST,
-        brightness: [-0.1, -0.1, -0.1], contrast: [0, 0, 0]
-      },
-      { type: EffectType.DESATURATE, factor: 1.0 },
-    ],
+    effects: [bc([-0.1, -0.1, -0.1]), desat(1.0)],
   },
   {
     id: 'lamp-deep', label: 'Lamp · Deep', opacity: 170,
-    effects: [
-      {
-        type: EffectType.BRIGHTNESS_CONTRAST,
-        brightness: [-0.3, -0.3, -0.3], contrast: [0, 0, 0]
-      },
-      { type: EffectType.DESATURATE, factor: 1.0 },
-      { type: EffectType.BLUR, count: 1 },
-    ],
+    effects: [bc([-0.3, -0.3, -0.3]), desat(1.0), blur(1)],
   },
 
   // ---- singles ------------------------------------------------------------
-  { id: 'desaturate', label: 'Clutter.DesaturateEffect', group: 'Effects', types: [EffectType.DESATURATE] },
-  { id: 'blur', label: 'Clutter.BlurEffect', group: 'Effects', types: [EffectType.BLUR] },
-  { id: 'brightness_contrast', label: 'Clutter.BrightnessContrastEffect', group: 'Effects', types: [EffectType.BRIGHTNESS_CONTRAST] },
-  { id: 'colorize', label: 'Clutter.ColorizeEffect', group: 'Effects', types: [EffectType.COLORIZE] },
-  { id: 'shader', label: 'Clutter.ShaderEffect', group: 'Effects', types: [EffectType.SHADER] },
+  {
+    id: 'desaturate', label: 'Clutter.DesaturateEffect', group: 'Effects',
+    effects: [desat(0.85)],
+  },
+  {
+    id: 'blur', label: 'Clutter.BlurEffect', group: 'Effects',
+    effects: [blur(3)],
+  },
+  {
+    id: 'brightness_contrast', label: 'Clutter.BrightnessContrastEffect', group: 'Effects',
+    effects: [bc([-0.12, -0.10, -0.06], [-0.06, -0.06, -0.04])],
+  },
+  {
+    id: 'colorize', label: 'Clutter.ColorizeEffect', group: 'Effects',
+    effects: [colorize([0x78, 0x84, 0x96, 0x80])],
+  },
+  {
+    id: 'shader', label: 'Clutter.ShaderEffect', group: 'Effects',
+    effects: [shader()],
+  },
 
   // ---- opacity-only -------------------------------------------------------
-  { id: 'fade-70', label: 'Fade · 70%', group: 'Opacity', opacity: 180, types: [] },
-  { id: 'fade-50', label: 'Fade · 50%', group: 'Opacity', opacity: 128, types: [] },
+  { id: 'fade-70', label: 'Fade · 70%', group: 'Opacity', opacity: 180, effects: [] },
+  { id: 'fade-50', label: 'Fade · 50%', group: 'Opacity', opacity: 128, effects: [] },
 
   // ---- tints — one colorize effect per preset, each a different tint ------
-  { id: 'tint-warm', label: 'Tint · Warm', group: 'Tints', opacity: 240, effects: [{ type: EffectType.COLORIZE, tint: [255, 180, 100, 0x60] }] },
-  { id: 'tint-cool', label: 'Tint · Cool', group: 'Tints', opacity: 240, effects: [{ type: EffectType.COLORIZE, tint: [140, 180, 220, 0x70] }] },
-  { id: 'tint-sepia', label: 'Tint · Sepia', group: 'Tints', opacity: 240, effects: [{ type: EffectType.COLORIZE, tint: [180, 140, 90, 0x80] }] },
-  { id: 'tint-rose', label: 'Tint · Rose', group: 'Tints', opacity: 240, effects: [{ type: EffectType.COLORIZE, tint: [220, 160, 180, 0x60] }] },
-  { id: 'tint-mint', label: 'Tint · Mint', group: 'Tints', opacity: 240, effects: [{ type: EffectType.COLORIZE, tint: [140, 210, 180, 0x60] }] },
-  { id: 'tint-dusk', label: 'Tint · Dusk', group: 'Tints', opacity: 240, effects: [{ type: EffectType.COLORIZE, tint: [140, 120, 180, 0x70] }] },
+  { id: 'tint-warm', label: 'Tint · Warm', group: 'Tints', opacity: 240, effects: [colorize([255, 180, 100, 0x60])] },
+  { id: 'tint-cool', label: 'Tint · Cool', group: 'Tints', opacity: 240, effects: [colorize([140, 180, 220, 0x70])] },
+  { id: 'tint-sepia', label: 'Tint · Sepia', group: 'Tints', opacity: 240, effects: [colorize([180, 140, 90, 0x80])] },
+  { id: 'tint-rose', label: 'Tint · Rose', group: 'Tints', opacity: 240, effects: [colorize([220, 160, 180, 0x60])] },
+  { id: 'tint-mint', label: 'Tint · Mint', group: 'Tints', opacity: 240, effects: [colorize([140, 210, 180, 0x60])] },
+  { id: 'tint-dusk', label: 'Tint · Dusk', group: 'Tints', opacity: 240, effects: [colorize([140, 120, 180, 0x70])] },
 
   // ---- combos -------------------------------------------------------------
-  { id: 'slate', label: 'Slate Tint', group: 'Combos', opacity: 220, types: [EffectType.COLORIZE] },
-  { id: 'soft-blur', label: 'Soft Blur', group: 'Combos', opacity: 200, types: [EffectType.BLUR] },
-  { id: 'dim', label: 'Dim', group: 'Combos', opacity: 230, types: [EffectType.BRIGHTNESS_CONTRAST] },
-  { id: 'focus', label: 'Focus', group: 'Combos', opacity: 200, types: [EffectType.BRIGHTNESS_CONTRAST, EffectType.DESATURATE] },
-  { id: 'recede', label: 'Recede', group: 'Combos', opacity: 170, types: [EffectType.BRIGHTNESS_CONTRAST, EffectType.DESATURATE] },
-  { id: 'midnight', label: 'Midnight', group: 'Combos', opacity: 200, types: [EffectType.BRIGHTNESS_CONTRAST, EffectType.COLORIZE] },
-  { id: 'ghost', label: 'Ghost', group: 'Combos', opacity: 140, types: [EffectType.BRIGHTNESS_CONTRAST, EffectType.DESATURATE, EffectType.BLUR] },
-  { id: 'dream', label: 'Dream', group: 'Combos', opacity: 220, types: [EffectType.BLUR, EffectType.COLORIZE] },
+  {
+    id: 'slate', label: 'Slate Tint', group: 'Combos', opacity: 220,
+    effects: [colorize([0x78, 0x84, 0x96, 0x80])],
+  },
+  {
+    id: 'soft-blur', label: 'Soft Blur', group: 'Combos', opacity: 200,
+    effects: [blur(3)],
+  },
+  {
+    id: 'dim', label: 'Dim', group: 'Combos', opacity: 230,
+    effects: [bc([-0.12, -0.10, -0.06], [-0.06, -0.06, -0.04])],
+  },
+  {
+    id: 'focus', label: 'Focus', group: 'Combos', opacity: 200,
+    effects: [bc([-0.12, -0.10, -0.06], [-0.06, -0.06, -0.04]), desat(0.85)],
+  },
+  {
+    id: 'recede', label: 'Recede', group: 'Combos', opacity: 170,
+    effects: [bc([-0.12, -0.10, -0.06], [-0.06, -0.06, -0.04]), desat(0.85)],
+  },
+  {
+    id: 'midnight', label: 'Midnight', group: 'Combos', opacity: 200,
+    effects: [bc([-0.12, -0.10, -0.06], [-0.06, -0.06, -0.04]), colorize([0x78, 0x84, 0x96, 0x80])],
+  },
+  {
+    id: 'ghost', label: 'Ghost', group: 'Combos', opacity: 140,
+    effects: [bc([-0.12, -0.10, -0.06], [-0.06, -0.06, -0.04]), desat(0.85), blur(3)],
+  },
+  {
+    id: 'dream', label: 'Dream', group: 'Combos', opacity: 220,
+    effects: [blur(3), colorize([0x78, 0x84, 0x96, 0x80])],
+  },
 
   // ---- combos using custom colorize tints ---------------------------------
   {
-    id: 'sunset', label: 'Sunset', group: 'Combos', opacity: 220, effects: [
-      { type: EffectType.COLORIZE, tint: [255, 140, 80, 0x60] },
-      {
-        type: EffectType.BRIGHTNESS_CONTRAST,
-        brightness: [-0.05, -0.05, -0.02], contrast: [-0.04, -0.04, -0.04]
-      },
-    ]
+    id: 'sunset', label: 'Sunset', group: 'Combos', opacity: 220,
+    effects: [
+      colorize([255, 140, 80, 0x60]),
+      bc([-0.05, -0.05, -0.02], [-0.04, -0.04, -0.04]),
+    ],
   },
   {
-    id: 'arctic', label: 'Arctic', group: 'Combos', opacity: 220, effects: [
-      { type: EffectType.COLORIZE, tint: [160, 200, 230, 0x70] },
-      {
-        type: EffectType.BRIGHTNESS_CONTRAST,
-        brightness: [0.02, 0.02, 0.05], contrast: [0.03, 0.03, 0.03]
-      },
-    ]
+    id: 'arctic', label: 'Arctic', group: 'Combos', opacity: 220,
+    effects: [
+      colorize([160, 200, 230, 0x70]),
+      bc([0.02, 0.02, 0.05], [0.03, 0.03, 0.03]),
+    ],
   },
 ];
 
 // ===== lamp view =====
+// Each slot names a PRESETS id and pairs it with an icon + tint class.
+// To change what a lamp does, edit its PRESETS entry; to change which
+// presets are in the cycle, reorder or swap entries here.
 const LAMP_PRESETS = [
   { id: 'none', iconFile: 'icon1-symbolic.svg', cssClass: 'lamp-level-1' },
   { id: 'lamp-dim', iconFile: 'icon2-symbolic.svg', cssClass: 'lamp-level-2' },
@@ -235,6 +247,7 @@ const LAMP_PRESETS = [
 ];
 
 // ===== menu view =====
+// Everything in PRESETS that isn't a lamp.
 const LAMP_IDS = new Set(LAMP_PRESETS.map(l => l.id));
 const MENU_PRESETS = PRESETS.filter(p => !LAMP_IDS.has(p.id));
 
@@ -253,12 +266,8 @@ function resolveSelection(id) {
   if (!preset)
     return { effects: [], opacity: DEFAULT_OPACITY };
 
-  const effects = preset.effects
-    ? buildEffectsFromSpecs(preset.effects)
-    : (preset.types ?? []).flatMap(t => createEffects(t));
-
   return {
-    effects,
+    effects: buildEffectsFromSpecs(preset.effects ?? []),
     opacity: preset.opacity ?? DEFAULT_OPACITY,
   };
 }
@@ -604,7 +613,7 @@ class DimLevelIndicator extends PanelMenu.Button {
     });
     this.add_child(this._iconBin);
 
-    this._items = new Map();
+    this._items = new Map(); // preset id -> PopupMenuItem
 
     let lastGroup = undefined;
     for (const preset of MENU_PRESETS) {
@@ -661,6 +670,8 @@ class DimLevelIndicator extends PanelMenu.Button {
     this._items.get(id)?.setOrnament(PopupMenu.Ornament.CHECK);
     this._currentId = id;
 
+    // A menu pick is never a lamp (lamps are excluded from the menu), so the
+    // next left click starts fresh from LAMP_PRESETS[0].
     this._lampIndex = -1;
 
     this._syncIcon();
