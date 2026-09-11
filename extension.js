@@ -56,21 +56,11 @@ const EffectType = {
   SHADER: 'shader',
 };
 
-const EFFECT_TYPE_VALUES = new Set(Object.values(EffectType));
-
-const EFFECT_LABELS = [
-  [EffectType.NONE, 'None'],
-  [EffectType.DESATURATE, 'Clutter.DesaturateEffect'],
-  [EffectType.BLUR, 'Clutter.BlurEffect'],
-  [EffectType.BRIGHTNESS_CONTRAST, 'Clutter.BrightnessContrastEffect'],
-  [EffectType.COLORIZE, 'Clutter.ColorizeEffect'],
-  [EffectType.SHADER, 'Clutter.ShaderEffect'],
-];
-
 const BLUR_STACK_COUNT = 3;
 const DEFAULT_OPACITY = 255;
 const DEFAULT_ICON = 'applications-graphics-symbolic';
 
+// Shared-default builder for single effect types.
 function createEffects(type) {
   switch (type) {
     case EffectType.DESATURATE:
@@ -104,6 +94,7 @@ function createEffects(type) {
   }
 }
 
+// Explicit-spec builder for presets carrying their own parameter values.
 function buildEffectsFromSpecs(specs) {
   const effects = [];
   for (const spec of specs) {
@@ -151,22 +142,26 @@ function buildEffectsFromSpecs(specs) {
   return effects;
 }
 
-// ===== lamp presets (cycled by left click) =====
-// Lamp 0 is the "None" state — same id as the menu's None entry, no effects,
-// no icon file, no CSS class. The panel falls back to the default icon.
-// Lamps 1–3 have their own icons and CSS classes.
-const LAMP_PRESETS = [
+// ===== master preset registry =====
+// Every effect combination lives here. Lamps and menu are just views onto it.
+//
+// A preset has:
+//   id       — unique key
+//   label    — menu text
+//   group    — used only for menu layout (separators)
+//   opacity  — 0–255
+//   types    — [EffectType.X, ...] using the shared defaults above, OR
+//   effects  — [{ type, ...params }] with explicit parameter values
+//
+// Lamps can reference ANY preset here, so they can use blur, combos, etc.
+const PRESETS = [
+  // ---- lamp slots (excluded from the menu; see LAMP_PRESETS below) --------
   {
-    id: EffectType.NONE,
-    label: 'None',
-    opacity: DEFAULT_OPACITY,
-    iconFile: 'icon1-symbolic.svg', cssClass: 'lamp-level-1',
+    id: 'none', label: 'None', opacity: 255,
     effects: [],
   },
   {
-    id: 'lamp-2', label: 'Lamp · Level 2',
-    opacity: 255,
-    iconFile: 'icon2-symbolic.svg', cssClass: 'lamp-level-2',
+    id: 'lamp-dim', label: 'Lamp · Dim', opacity: 255,
     effects: [
       {
         type: EffectType.BRIGHTNESS_CONTRAST,
@@ -175,9 +170,7 @@ const LAMP_PRESETS = [
     ],
   },
   {
-    id: 'lamp-3', label: 'Lamp · Level 3',
-    opacity: 204,
-    iconFile: 'icon3-symbolic.svg', cssClass: 'lamp-level-3',
+    id: 'lamp-focus', label: 'Lamp · Focus', opacity: 204,
     effects: [
       {
         type: EffectType.BRIGHTNESS_CONTRAST,
@@ -187,45 +180,65 @@ const LAMP_PRESETS = [
     ],
   },
   {
-    id: 'lamp-4', label: 'Lamp · Level 4',
-    opacity: 170,
-    iconFile: 'icon4-symbolic.svg', cssClass: 'lamp-level-4',
+    id: 'lamp-deep', label: 'Lamp · Deep', opacity: 170,
     effects: [
       {
         type: EffectType.BRIGHTNESS_CONTRAST,
         brightness: [-0.3, -0.3, -0.3], contrast: [0, 0, 0]
       },
       { type: EffectType.DESATURATE, factor: 1.0 },
+      { type: EffectType.BLUR, count: 1 },
     ],
   },
+
+  // ---- singles: shared defaults from createEffects() ----------------------
+  { id: 'desaturate', label: 'Clutter.DesaturateEffect', group: 'Effects', types: [EffectType.DESATURATE] },
+  { id: 'blur', label: 'Clutter.BlurEffect', group: 'Effects', types: [EffectType.BLUR] },
+  { id: 'brightness_contrast', label: 'Clutter.BrightnessContrastEffect', group: 'Effects', types: [EffectType.BRIGHTNESS_CONTRAST] },
+  { id: 'colorize', label: 'Clutter.ColorizeEffect', group: 'Effects', types: [EffectType.COLORIZE] },
+  { id: 'shader', label: 'Clutter.ShaderEffect', group: 'Effects', types: [EffectType.SHADER] },
+
+  // ---- opacity-only -------------------------------------------------------
+  { id: 'fade-70', label: 'Fade · 70%', group: 'Opacity', opacity: 180, types: [] },
+  { id: 'fade-50', label: 'Fade · 50%', group: 'Opacity', opacity: 128, types: [] },
+
+  // ---- combos -------------------------------------------------------------
+  { id: 'slate', label: 'Slate Tint', group: 'Combos', opacity: 220, types: [EffectType.COLORIZE] },
+  { id: 'soft-blur', label: 'Soft Blur', group: 'Combos', opacity: 200, types: [EffectType.BLUR] },
+  { id: 'dim', label: 'Dim', group: 'Combos', opacity: 230, types: [EffectType.BRIGHTNESS_CONTRAST] },
+  { id: 'focus', label: 'Focus', group: 'Combos', opacity: 200, types: [EffectType.BRIGHTNESS_CONTRAST, EffectType.DESATURATE] },
+  { id: 'recede', label: 'Recede', group: 'Combos', opacity: 170, types: [EffectType.BRIGHTNESS_CONTRAST, EffectType.DESATURATE] },
+  { id: 'midnight', label: 'Midnight', group: 'Combos', opacity: 200, types: [EffectType.BRIGHTNESS_CONTRAST, EffectType.COLORIZE] },
+  { id: 'ghost', label: 'Ghost', group: 'Combos', opacity: 140, types: [EffectType.BRIGHTNESS_CONTRAST, EffectType.DESATURATE, EffectType.BLUR] },
+  { id: 'dream', label: 'Dream', group: 'Combos', opacity: 220, types: [EffectType.BLUR, EffectType.COLORIZE] },
 ];
 
-// ===== menu presets =====
-const MENU_PRESETS = [
-  { id: 'fade-70', label: 'Fade · 70%', opacity: 180, types: [] },
-  { id: 'fade-50', label: 'Fade · 50%', opacity: 128, types: [] },
-  { id: 'slate', label: 'Slate Tint', opacity: 220, types: [EffectType.COLORIZE] },
-  { id: 'soft-blur', label: 'Soft Blur', opacity: 200, types: [EffectType.BLUR] },
-  { id: 'dim', label: 'Dim', opacity: 230, types: [EffectType.BRIGHTNESS_CONTRAST] },
-  { id: 'focus', label: 'Focus', opacity: 200, types: [EffectType.BRIGHTNESS_CONTRAST, EffectType.DESATURATE] },
-  { id: 'recede', label: 'Recede', opacity: 170, types: [EffectType.BRIGHTNESS_CONTRAST, EffectType.DESATURATE] },
-  { id: 'midnight', label: 'Midnight', opacity: 200, types: [EffectType.BRIGHTNESS_CONTRAST, EffectType.COLORIZE] },
-  { id: 'ghost', label: 'Ghost', opacity: 140, types: [EffectType.BRIGHTNESS_CONTRAST, EffectType.DESATURATE, EffectType.BLUR] },
-  { id: 'dream', label: 'Dream', opacity: 220, types: [EffectType.BLUR, EffectType.COLORIZE] },
+// ===== lamp slots — which PRESETS entries get cycled + their icons =====
+// To change the cycle, just reorder or swap ids. Any PRESETS id works.
+const LAMP_PRESETS = [
+  { presetId: 'none', iconFile: 'icon1-symbolic.svg', cssClass: 'lamp-level-1' },
+  { presetId: 'lamp-dim', iconFile: 'icon2-symbolic.svg', cssClass: 'lamp-level-2' },
+  { presetId: 'lamp-focus', iconFile: 'icon3-symbolic.svg', cssClass: 'lamp-level-3' },
+  { presetId: 'lamp-deep', iconFile: 'icon4-symbolic.svg', cssClass: 'lamp-level-4' },
 ];
 
-const ALL_PRESETS = [...LAMP_PRESETS, ...MENU_PRESETS];
+const LAMP_IDS = new Set(LAMP_PRESETS.map(l => l.presetId));
+
+// ===== menu presets — every PRESETS entry that is NOT a lamp slot =====
+const MENU_PRESETS = PRESETS.filter(p => !LAMP_IDS.has(p.id));
+
+function findPreset(id) {
+  return PRESETS.find(p => p.id === id);
+}
+
+function findLampIndex(id) {
+  return LAMP_PRESETS.findIndex(l => l.presetId === id);
+}
 
 function resolveSelection(id) {
-  if (id === EffectType.NONE)
-    return { effects: [], opacity: DEFAULT_OPACITY, isNone: true };
-
-  if (EFFECT_TYPE_VALUES.has(id))
-    return { effects: createEffects(id), opacity: DEFAULT_OPACITY, isNone: false };
-
-  const preset = ALL_PRESETS.find(p => p.id === id);
+  const preset = findPreset(id);
   if (!preset)
-    return { effects: [], opacity: DEFAULT_OPACITY, isNone: true };
+    return { effects: [], opacity: DEFAULT_OPACITY };
 
   const effects = preset.effects
     ? buildEffectsFromSpecs(preset.effects)
@@ -234,19 +247,14 @@ function resolveSelection(id) {
   return {
     effects,
     opacity: preset.opacity ?? DEFAULT_OPACITY,
-    isNone: false,
   };
-}
-
-function findLampIndex(id) {
-  return LAMP_PRESETS.findIndex(p => p.id === id);
 }
 
 // ===== state =====
 let state;
 
 function initState() {
-  const initialId = LAMP_PRESETS[0].id; // EffectType.NONE
+  const initialId = LAMP_PRESETS[0].presetId;
   state = {
     connections: [],
     dimmed: new Set(),
@@ -365,7 +373,7 @@ function isCoveredFullyOrPartially(window) {
   return false;
 }
 
-// ===== effect application (version-tracked diff) =====
+// ===== effect application =====
 
 function applyDimEffects(actor) {
   if (!state) return;
@@ -585,23 +593,18 @@ class DimLevelIndicator extends PanelMenu.Button {
     });
     this.add_child(this._iconBin);
 
-    this._items = new Map(); // id -> PopupMenuItem
+    this._items = new Map(); // preset id -> PopupMenuItem
 
-    // Singles.
-    for (const [type, label] of EFFECT_LABELS) {
-      const item = new PopupMenu.PopupMenuItem(label);
-      item.setOrnament(type === EffectType.NONE
-        ? PopupMenu.Ornament.CHECK
-        : PopupMenu.Ornament.NONE);
-      item.connect('activate', () => this._selectFromMenu(type));
-      this.menu.addMenuItem(item);
-      this._items.set(type, item);
-    }
-
-    // Separator, then the presets. Lamp-only entries are absent.
-    this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-
+    // Build the menu from MENU_PRESETS, inserting a separator every time the
+    // group label changes. Lamps are excluded — they live on the left-click
+    // cycle only.
+    let lastGroup = undefined;
     for (const preset of MENU_PRESETS) {
+      const group = preset.group ?? null;
+      if (lastGroup !== undefined && group !== lastGroup)
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+      lastGroup = group;
+
       const item = new PopupMenu.PopupMenuItem(preset.label);
       item.setOrnament(PopupMenu.Ornament.NONE);
       item.connect('activate', () => this._selectFromMenu(preset.id));
@@ -610,7 +613,7 @@ class DimLevelIndicator extends PanelMenu.Button {
     }
 
     this._currentId = state.selectionId;
-    this._lampIndex = state.lampIndex;
+    this._lampIndex = findLampIndex(state.selectionId);
     this._syncIcon();
   }
 
@@ -633,21 +636,15 @@ class DimLevelIndicator extends PanelMenu.Button {
   }
 
   _cycleLamp() {
-    // Clear whatever checkmark is showing first — the lamp we're leaving
-    // may or may not correspond to a menu item.
+    // Clear checkmark on whatever menu item may be showing.
     this._items.get(this._currentId)?.setOrnament(PopupMenu.Ornament.NONE);
 
     this._lampIndex = (this._lampIndex + 1) % LAMP_PRESETS.length;
-    const preset = LAMP_PRESETS[this._lampIndex];
-    this._currentId = preset.id;
-
-    // Lamp 0 shares its id with the menu's None entry, so mark it.
-    // Lamps 1–3 have no menu item; the panel icon carries the state.
-    if (this._items.has(preset.id))
-      this._items.get(preset.id).setOrnament(PopupMenu.Ornament.CHECK);
+    const slot = LAMP_PRESETS[this._lampIndex];
+    this._currentId = slot.presetId;
 
     this._syncIcon();
-    this._onSelect(preset.id);
+    this._onSelect(slot.presetId);
   }
 
   _selectFromMenu(id) {
@@ -657,30 +654,29 @@ class DimLevelIndicator extends PanelMenu.Button {
     this._items.get(id)?.setOrnament(PopupMenu.Ornament.CHECK);
     this._currentId = id;
 
-    // If the menu pick happens to be a lamp (currently only the None state),
-    // keep the cycle index in sync so the next left click continues from it.
-    const idx = findLampIndex(id);
-    if (idx >= 0) this._lampIndex = idx;
+    // A menu pick is never a lamp (lamps are excluded from the menu), so the
+    // next left click starts fresh from LAMP_PRESETS[0].
+    this._lampIndex = -1;
 
     this._syncIcon();
     this._onSelect(id);
   }
 
   _syncIcon() {
-    for (const p of LAMP_PRESETS)
-      if (p.cssClass) this._iconBin.remove_style_class_name(p.cssClass);
+    // Strip any previously applied tint class.
+    for (const slot of LAMP_PRESETS)
+      this._iconBin.remove_style_class_name(slot.cssClass);
 
-    const lamp = LAMP_PRESETS.find(p => p.id === this._currentId);
+    const slot = LAMP_PRESETS.find(l => l.presetId === this._currentId);
 
-    // Non-lamp selection, or a lamp with no icon file (the None lamp):
-    // fall back to the default icon.
-    if (!lamp || !lamp.iconFile) {
+    // Not a lamp (menu preset): default icon, no tint.
+    if (!slot) {
       this._icon.gicon = null;
       this._icon.icon_name = DEFAULT_ICON;
       return;
     }
 
-    const iconPath = GLib.build_filenamev([this._extensionPath, 'icons', lamp.iconFile]);
+    const iconPath = GLib.build_filenamev([this._extensionPath, 'icons', slot.iconFile]);
     const file = Gio.File.new_for_path(iconPath);
 
     if (file.query_exists(null)) {
@@ -691,7 +687,7 @@ class DimLevelIndicator extends PanelMenu.Button {
       this._icon.icon_name = DEFAULT_ICON;
     }
 
-    if (lamp.cssClass) this._iconBin.add_style_class_name(lamp.cssClass);
+    this._iconBin.add_style_class_name(slot.cssClass);
   }
 }
 
