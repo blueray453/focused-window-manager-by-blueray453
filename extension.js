@@ -60,7 +60,6 @@ const BLUR_STACK_COUNT = 3;
 const DEFAULT_OPACITY = 255;
 const DEFAULT_ICON = 'applications-graphics-symbolic';
 
-// Shared-default builder for single effect types.
 function createEffects(type) {
   switch (type) {
     case EffectType.DESATURATE:
@@ -94,7 +93,6 @@ function createEffects(type) {
   }
 }
 
-// Explicit-spec builder for presets carrying their own parameter values.
 function buildEffectsFromSpecs(specs) {
   const effects = [];
   for (const spec of specs) {
@@ -127,6 +125,7 @@ function buildEffectsFromSpecs(specs) {
       case EffectType.COLORIZE: {
         const t = spec.tint ?? [0x78, 0x84, 0x96, 0x80];
         const e = new Clutter.ColorizeEffect();
+        // Cogl.Color — Clutter.Color was removed in GNOME 47.
         e.set_tint(new Cogl.Color({
           red: t[0], green: t[1], blue: t[2], alpha: t[3],
         }));
@@ -143,22 +142,9 @@ function buildEffectsFromSpecs(specs) {
 }
 
 // ===== master preset registry — the single source of truth =====
-// Every effect combo lives here. Lamps and the right-click menu are both
-// views onto this list — neither defines its own effects.
-//
-// A preset has:
-//   id       — unique key
-//   label    — menu text
-//   group    — used only for menu layout (separators)
-//   opacity  — 0–255
-//   types    — [EffectType.X, ...] using the shared defaults above, OR
-//   effects  — [{ type, ...params }] with explicit parameter values
 const PRESETS = [
-  // Referenced by LAMP_PRESETS below. Ids must match.
-  {
-    id: 'none', label: 'None', opacity: 255,
-    effects: [],
-  },
+  // ---- lamp slots (referenced by LAMP_PRESETS below) ----------------------
+  { id: 'none', label: 'None', opacity: 255, effects: [] },
   {
     id: 'lamp-dim', label: 'Lamp · Dim', opacity: 255,
     effects: [
@@ -190,18 +176,26 @@ const PRESETS = [
     ],
   },
 
-  // singles
+  // ---- singles ------------------------------------------------------------
   { id: 'desaturate', label: 'Clutter.DesaturateEffect', group: 'Effects', types: [EffectType.DESATURATE] },
   { id: 'blur', label: 'Clutter.BlurEffect', group: 'Effects', types: [EffectType.BLUR] },
   { id: 'brightness_contrast', label: 'Clutter.BrightnessContrastEffect', group: 'Effects', types: [EffectType.BRIGHTNESS_CONTRAST] },
   { id: 'colorize', label: 'Clutter.ColorizeEffect', group: 'Effects', types: [EffectType.COLORIZE] },
   { id: 'shader', label: 'Clutter.ShaderEffect', group: 'Effects', types: [EffectType.SHADER] },
 
-  // opacity-only
+  // ---- opacity-only -------------------------------------------------------
   { id: 'fade-70', label: 'Fade · 70%', group: 'Opacity', opacity: 180, types: [] },
   { id: 'fade-50', label: 'Fade · 50%', group: 'Opacity', opacity: 128, types: [] },
 
-  // combos
+  // ---- tints — one colorize effect per preset, each a different tint ------
+  { id: 'tint-warm', label: 'Tint · Warm', group: 'Tints', opacity: 240, effects: [{ type: EffectType.COLORIZE, tint: [255, 180, 100, 0x60] }] },
+  { id: 'tint-cool', label: 'Tint · Cool', group: 'Tints', opacity: 240, effects: [{ type: EffectType.COLORIZE, tint: [140, 180, 220, 0x70] }] },
+  { id: 'tint-sepia', label: 'Tint · Sepia', group: 'Tints', opacity: 240, effects: [{ type: EffectType.COLORIZE, tint: [180, 140, 90, 0x80] }] },
+  { id: 'tint-rose', label: 'Tint · Rose', group: 'Tints', opacity: 240, effects: [{ type: EffectType.COLORIZE, tint: [220, 160, 180, 0x60] }] },
+  { id: 'tint-mint', label: 'Tint · Mint', group: 'Tints', opacity: 240, effects: [{ type: EffectType.COLORIZE, tint: [140, 210, 180, 0x60] }] },
+  { id: 'tint-dusk', label: 'Tint · Dusk', group: 'Tints', opacity: 240, effects: [{ type: EffectType.COLORIZE, tint: [140, 120, 180, 0x70] }] },
+
+  // ---- combos -------------------------------------------------------------
   { id: 'slate', label: 'Slate Tint', group: 'Combos', opacity: 220, types: [EffectType.COLORIZE] },
   { id: 'soft-blur', label: 'Soft Blur', group: 'Combos', opacity: 200, types: [EffectType.BLUR] },
   { id: 'dim', label: 'Dim', group: 'Combos', opacity: 230, types: [EffectType.BRIGHTNESS_CONTRAST] },
@@ -210,12 +204,29 @@ const PRESETS = [
   { id: 'midnight', label: 'Midnight', group: 'Combos', opacity: 200, types: [EffectType.BRIGHTNESS_CONTRAST, EffectType.COLORIZE] },
   { id: 'ghost', label: 'Ghost', group: 'Combos', opacity: 140, types: [EffectType.BRIGHTNESS_CONTRAST, EffectType.DESATURATE, EffectType.BLUR] },
   { id: 'dream', label: 'Dream', group: 'Combos', opacity: 220, types: [EffectType.BLUR, EffectType.COLORIZE] },
+
+  // ---- combos using custom colorize tints ---------------------------------
+  {
+    id: 'sunset', label: 'Sunset', group: 'Combos', opacity: 220, effects: [
+      { type: EffectType.COLORIZE, tint: [255, 140, 80, 0x60] },
+      {
+        type: EffectType.BRIGHTNESS_CONTRAST,
+        brightness: [-0.05, -0.05, -0.02], contrast: [-0.04, -0.04, -0.04]
+      },
+    ]
+  },
+  {
+    id: 'arctic', label: 'Arctic', group: 'Combos', opacity: 220, effects: [
+      { type: EffectType.COLORIZE, tint: [160, 200, 230, 0x70] },
+      {
+        type: EffectType.BRIGHTNESS_CONTRAST,
+        brightness: [0.02, 0.02, 0.05], contrast: [0.03, 0.03, 0.03]
+      },
+    ]
+  },
 ];
 
 // ===== lamp view =====
-// Each slot names a PRESETS id and pairs it with an icon + tint class.
-// To change what a lamp does, edit its PRESETS entry; to change which
-// presets are in the cycle, reorder or swap entries here.
 const LAMP_PRESETS = [
   { id: 'none', iconFile: 'icon1-symbolic.svg', cssClass: 'lamp-level-1' },
   { id: 'lamp-dim', iconFile: 'icon2-symbolic.svg', cssClass: 'lamp-level-2' },
@@ -224,7 +235,6 @@ const LAMP_PRESETS = [
 ];
 
 // ===== menu view =====
-// Everything in PRESETS that isn't a lamp.
 const LAMP_IDS = new Set(LAMP_PRESETS.map(l => l.id));
 const MENU_PRESETS = PRESETS.filter(p => !LAMP_IDS.has(p.id));
 
@@ -379,19 +389,16 @@ function isCoveredFullyOrPartially(window) {
 function applyDimEffects(actor) {
   if (!state) return;
 
-  // Already has the current plan applied.
   if (state.appliedVersionByActor.get(actor) === state.planVersion) {
     state.dimmed.add(actor);
     return;
   }
 
-  // Strip the previous per-actor effects.
   const oldEffects = state.effectsByActor.get(actor);
   if (oldEffects)
     for (const e of oldEffects) actor.remove_effect(e);
 
-  // Build fresh instances for THIS actor. A ClutterEffect can only be attached
-  // to one actor, so effects cannot be shared across windows.
+  // Fresh instances per actor — a ClutterEffect can only attach to one actor.
   const plan = resolveSelection(state.selectionId);
 
   actor.opacity = plan.opacity;
@@ -597,7 +604,7 @@ class DimLevelIndicator extends PanelMenu.Button {
     });
     this.add_child(this._iconBin);
 
-    this._items = new Map(); // preset id -> PopupMenuItem
+    this._items = new Map();
 
     let lastGroup = undefined;
     for (const preset of MENU_PRESETS) {
@@ -637,7 +644,6 @@ class DimLevelIndicator extends PanelMenu.Button {
   }
 
   _cycleLamp() {
-    // Clear checkmark on whatever menu item may be showing.
     this._items.get(this._currentId)?.setOrnament(PopupMenu.Ornament.NONE);
 
     this._lampIndex = (this._lampIndex + 1) % LAMP_PRESETS.length;
@@ -655,8 +661,6 @@ class DimLevelIndicator extends PanelMenu.Button {
     this._items.get(id)?.setOrnament(PopupMenu.Ornament.CHECK);
     this._currentId = id;
 
-    // A menu pick is never a lamp (lamps are excluded from the menu), so the
-    // next left click starts fresh from LAMP_PRESETS[0].
     this._lampIndex = -1;
 
     this._syncIcon();
@@ -664,13 +668,11 @@ class DimLevelIndicator extends PanelMenu.Button {
   }
 
   _syncIcon() {
-    // Strip any previously applied tint class.
     for (const slot of LAMP_PRESETS)
       this._iconBin.remove_style_class_name(slot.cssClass);
 
     const slot = LAMP_PRESETS.find(l => l.id === this._currentId);
 
-    // Not a lamp (menu preset): default icon, no tint.
     if (!slot) {
       this._icon.gicon = null;
       this._icon.icon_name = DEFAULT_ICON;
