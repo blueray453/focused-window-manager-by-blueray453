@@ -58,7 +58,8 @@ const BLUR_STACK_COUNT = 3;
 
 const DEFAULT_OPACITY = 255;
 
-// Unchanged from before — one effect type in, one array of instances out.
+// Unchanged from before — one effect type in, one array of instances out,
+// using the shared default parameters.
 function createEffects(type) {
   switch (type) {
     case EffectType.DESATURATE:
@@ -105,12 +106,67 @@ function createEffects(type) {
   }
 }
 
-// --- Preconfigured combos ----------------------------------------------------
-// Each preset stacks one or more of the effect types above (so their parameters
-// stay exactly as defined in createEffects) and optionally lowers window
-// opacity. `types: []` means "opacity only — no effects".
+// Build effects from explicit spec objects — used by presets that need their
+// own parameter values rather than the shared defaults in createEffects().
 //
-// To add one: append an entry here. Nothing else in the file needs to change.
+// Spec forms:
+//   { type: EffectType.BRIGHTNESS_CONTRAST, brightness: [r,g,b], contrast: [r,g,b] }
+//   { type: EffectType.DESATURATE,          factor: 0–1 }
+//   { type: EffectType.BLUR,                count: N }
+//   { type: EffectType.COLORIZE,            tint: [r,g,b,a] }
+//   { type: EffectType.SHADER }
+function buildEffectsFromSpecs(specs) {
+  const effects = [];
+  for (const spec of specs) {
+    switch (spec.type) {
+      case EffectType.BRIGHTNESS_CONTRAST: {
+        const e = new Clutter.BrightnessContrastEffect();
+        const b = spec.brightness ?? [0, 0, 0];
+        const c = spec.contrast ?? [0, 0, 0];
+        e.set_brightness_full(b[0], b[1], b[2]);
+        e.set_contrast_full(c[0], c[1], c[2]);
+        effects.push(e);
+        break;
+      }
+
+      case EffectType.DESATURATE:
+        effects.push(new Clutter.DesaturateEffect({
+          factor: spec.factor ?? 1.0,
+        }));
+        break;
+
+      case EffectType.BLUR: {
+        const n = spec.count ?? BLUR_STACK_COUNT;
+        for (let i = 0; i < n; i++)
+          effects.push(new Clutter.BlurEffect());
+        break;
+      }
+
+      case EffectType.COLORIZE: {
+        const e = new Clutter.ColorizeEffect();
+        const t = spec.tint ?? [0x78, 0x84, 0x96, 0x80];
+        e.set_tint(new Cogl.Color({
+          red: t[0], green: t[1], blue: t[2], alpha: t[3],
+        }));
+        effects.push(e);
+        break;
+      }
+
+      case EffectType.SHADER:
+        effects.push(new GrayscaleShaderEffect());
+        break;
+    }
+  }
+  return effects;
+}
+
+// --- Preconfigured combos ----------------------------------------------------
+// Presets come in two flavours:
+//
+//   types:   [...] — effect types using the shared defaults from createEffects()
+//   effects: [...] — explicit spec objects with their own parameter values
+//
+// Both may be combined with `opacity`. To add a preset, append an entry.
 const PRESETS = [
   // Opacity only — no effects.
   { id: 'fade-70', label: 'Fade · 70%', opacity: 180, types: [] },
@@ -128,6 +184,41 @@ const PRESETS = [
   { id: 'midnight', label: 'Midnight', opacity: 200, types: [EffectType.BRIGHTNESS_CONTRAST, EffectType.COLORIZE] },
   { id: 'ghost', label: 'Ghost', opacity: 140, types: [EffectType.BRIGHTNESS_CONTRAST, EffectType.DESATURATE, EffectType.BLUR] },
   { id: 'dream', label: 'Dream', opacity: 220, types: [EffectType.BLUR, EffectType.COLORIZE] },
+
+  // Lamp-style levels, each using its own parameter values rather than the
+  // shared defaults. Level 1 leans brighter (an "attention" setting); Levels 2
+  // and 3 step down into dim and grey.
+  {
+    id: 'lamp-1', label: 'Lamp · Level 1',
+    opacity: 255,
+    effects: [
+      {
+        type: EffectType.BRIGHTNESS_CONTRAST,
+        brightness: [0.5, 0.5, 0.5], contrast: [0, 0, 0]
+      },
+    ],
+  },
+  {
+    id: 'lamp-2', label: 'Lamp · Level 2',
+    opacity: 255,
+    effects: [
+      {
+        type: EffectType.BRIGHTNESS_CONTRAST,
+        brightness: [-0.2, -0.2, -0.2], contrast: [0, 0, 0]
+      },
+    ],
+  },
+  {
+    id: 'lamp-3', label: 'Lamp · Level 3',
+    opacity: 204,
+    effects: [
+      {
+        type: EffectType.BRIGHTNESS_CONTRAST,
+        brightness: [-0.1, -0.1, -0.1], contrast: [0, 0, 0]
+      },
+      { type: EffectType.DESATURATE, factor: 1.0 },
+    ],
+  },
 ];
 
 // Turn a selection id (an EffectType value or a preset id) into a concrete
@@ -145,9 +236,11 @@ function resolveSelection(id) {
   if (!preset)
     return { effects: [], opacity: DEFAULT_OPACITY, isNone: true };
 
-  const effects = [];
-  for (const type of preset.types)
-    effects.push(...createEffects(type));
+  let effects;
+  if (preset.effects)
+    effects = buildEffectsFromSpecs(preset.effects);
+  else
+    effects = (preset.types ?? []).flatMap(t => createEffects(t));
 
   return {
     effects,
