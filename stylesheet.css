@@ -29,3 +29,10 @@
 .lamp-level-3 .system-status-icon {
   color: #ffb800;
 }
+
+.lamp-level-4 {
+  background-color: rgba(255, 140, 0, 0.75);
+}
+.lamp-level-4 .system-status-icon {
+  color: #ff9a00;
+}
