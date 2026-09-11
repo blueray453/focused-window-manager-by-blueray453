@@ -230,8 +230,8 @@ const PRESETS = [
 const LAMP_PRESETS = [
   { id: 'none', iconFile: 'icon1-symbolic.svg', cssClass: 'lamp-level-1' },
   { id: 'lamp-dim', iconFile: 'icon2-symbolic.svg', cssClass: 'lamp-level-2' },
-  { id: 'lamp-focus', iconFile: 'icon3-symbolic.svg', cssClass: 'lamp-level-3' },
-  { id: 'lamp-deep', iconFile: 'icon4-symbolic.svg', cssClass: 'lamp-level-4' },
+  { id: 'tint-cool', iconFile: 'icon3-symbolic.svg', cssClass: 'lamp-level-3' },
+  { id: 'lamp-focus', iconFile: 'icon4-symbolic.svg', cssClass: 'lamp-level-4' },
 ];
 
 // ===== menu view =====
