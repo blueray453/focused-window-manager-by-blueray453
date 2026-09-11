@@ -1,17 +1,31 @@
-import Shell from 'gi://Shell';
-import Cogl from 'gi://Cogl';
-import St from 'gi://St';
-import GObject from 'gi://GObject';
-import Clutter from 'gi://Clutter';
+import Meta from 'gi://Meta';
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
+import St from 'gi://St';
+import Clutter from 'gi://Clutter';
+import GObject from 'gi://GObject';
+import Shell from 'gi://Shell';
+import Cogl from 'gi://Cogl';
 
+import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
-import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 
-// --- Custom shader effect (grayscale), used by the "Clutter.ShaderEffect" option ---
+const Display = global.get_display();
+const WindowManager = global.get_window_manager();
+const WorkspaceManager = global.get_workspace_manager();
+
+import {
+  initLogging,
+  stopLogging,
+  createLogger,
+  flushBuffer,
+} from './logger.js';
+
+const journal = createLogger(import.meta.url);
+
+// ===== shader effect (grayscale) =====
 const SHADER_DECL = `
 vec3 desaturate(vec3 col) {
     col = pow(col, vec3(2.2));
@@ -32,7 +46,7 @@ const GrayscaleShaderEffect = GObject.registerClass(
     }
   });
 
-// --- Effect type registry ---
+// ===== effect types =====
 const EffectType = {
   NONE: 'none',
   DESATURATE: 'desaturate',
@@ -57,7 +71,6 @@ const BLUR_STACK_COUNT = 3;
 const DEFAULT_OPACITY = 255;
 const DEFAULT_ICON = 'applications-graphics-symbolic';
 
-// Unchanged — one effect type in, one array of instances out.
 function createEffects(type) {
   switch (type) {
     case EffectType.DESATURATE:
@@ -77,7 +90,7 @@ function createEffects(type) {
     case EffectType.COLORIZE: {
       const effect = new Clutter.ColorizeEffect();
       effect.set_tint(new Cogl.Color({
-        red: 0x78, green: 0x84, blue: 0x96, alpha: 0x80
+        red: 0x78, green: 0x84, blue: 0x96, alpha: 0x80,
       }));
       return [effect];
     }
@@ -91,37 +104,45 @@ function createEffects(type) {
   }
 }
 
-// Explicit-spec builder (unchanged) — for presets carrying their own values.
 function buildEffectsFromSpecs(specs) {
   const effects = [];
   for (const spec of specs) {
     switch (spec.type) {
       case EffectType.BRIGHTNESS_CONTRAST: {
-        const e = new Clutter.BrightnessContrastEffect();
         const b = spec.brightness ?? [0, 0, 0];
         const c = spec.contrast ?? [0, 0, 0];
+        if (b.every(v => v === 0) && c.every(v => v === 0)) break;
+        const e = new Clutter.BrightnessContrastEffect();
         e.set_brightness_full(b[0], b[1], b[2]);
         e.set_contrast_full(c[0], c[1], c[2]);
         effects.push(e);
         break;
       }
-      case EffectType.DESATURATE:
-        effects.push(new Clutter.DesaturateEffect({ factor: spec.factor ?? 1.0 }));
-        break;
-      case EffectType.BLUR: {
-        const n = spec.count ?? BLUR_STACK_COUNT;
-        for (let i = 0; i < n; i++) effects.push(new Clutter.BlurEffect());
+
+      case EffectType.DESATURATE: {
+        const f = spec.factor ?? 1.0;
+        if (f === 0.0) break;
+        effects.push(new Clutter.DesaturateEffect({ factor: f }));
         break;
       }
+
+      case EffectType.BLUR: {
+        const n = spec.count ?? BLUR_STACK_COUNT;
+        for (let i = 0; i < n; i++)
+          effects.push(new Clutter.BlurEffect());
+        break;
+      }
+
       case EffectType.COLORIZE: {
-        const e = new Clutter.ColorizeEffect();
         const t = spec.tint ?? [0x78, 0x84, 0x96, 0x80];
+        const e = new Clutter.ColorizeEffect();
         e.set_tint(new Cogl.Color({
           red: t[0], green: t[1], blue: t[2], alpha: t[3],
         }));
         effects.push(e);
         break;
       }
+
       case EffectType.SHADER:
         effects.push(new GrayscaleShaderEffect());
         break;
@@ -130,23 +151,17 @@ function buildEffectsFromSpecs(specs) {
   return effects;
 }
 
-// --- Lamp presets (cycled by left click, not shown in the menu) -------------
-// Each entry pairs a set of effect params with an icon and a CSS class so the
-// panel button itself indicates which level is active.
-//
-// Level 4 is new — the user-provided table only covered 1–3. Values chosen to
-// continue the progression into a deeper dim. Adjust freely.
+// ===== lamp presets (cycled by left click) =====
+// Lamp 0 is the "None" state — same id as the menu's None entry, no effects,
+// no icon file, no CSS class. The panel falls back to the default icon.
+// Lamps 1–3 have their own icons and CSS classes.
 const LAMP_PRESETS = [
   {
-    id: 'lamp-1', label: 'Lamp · Level 1',
-    opacity: 255,
+    id: EffectType.NONE,
+    label: 'None',
+    opacity: DEFAULT_OPACITY,
     iconFile: 'icon1-symbolic.svg', cssClass: 'lamp-level-1',
-    effects: [
-      {
-        type: EffectType.BRIGHTNESS_CONTRAST,
-        brightness: [0.5, 0.5, 0.5], contrast: [0, 0, 0]
-      },
-    ],
+    effects: [],
   },
   {
     id: 'lamp-2', label: 'Lamp · Level 2',
@@ -185,8 +200,7 @@ const LAMP_PRESETS = [
   },
 ];
 
-// --- Menu presets (shown in the right-click menu) ---------------------------
-// Lamp presets are deliberately absent — they live only on the left-click cycle.
+// ===== menu presets =====
 const MENU_PRESETS = [
   { id: 'fade-70', label: 'Fade · 70%', opacity: 180, types: [] },
   { id: 'fade-50', label: 'Fade · 50%', opacity: 128, types: [] },
@@ -200,10 +214,8 @@ const MENU_PRESETS = [
   { id: 'dream', label: 'Dream', opacity: 220, types: [EffectType.BLUR, EffectType.COLORIZE] },
 ];
 
-// Combined lookup used by resolveSelection().
 const ALL_PRESETS = [...LAMP_PRESETS, ...MENU_PRESETS];
 
-// Turn a selection id into a concrete plan.
 function resolveSelection(id) {
   if (id === EffectType.NONE)
     return { effects: [], opacity: DEFAULT_OPACITY, isNone: true };
@@ -226,263 +238,526 @@ function resolveSelection(id) {
   };
 }
 
-function lampIndexFor(id) {
+function findLampIndex(id) {
   return LAMP_PRESETS.findIndex(p => p.id === id);
 }
 
-// --- Panel menu -------------------------------------------------------------
-const EffectMenuIndicator = GObject.registerClass(
-  class EffectMenuIndicator extends PanelMenu.Button {
-    _init(extensionPath, onSelect) {
-      super._init(0.0, 'Window Effect', false);
+// ===== state =====
+let state;
 
-      this._extensionPath = extensionPath;
+function initState() {
+  const initialId = LAMP_PRESETS[0].id; // EffectType.NONE
+  state = {
+    connections: [],
+    dimmed: new Set(),
+    effectsByActor: new WeakMap(),
+    appliedVersionByActor: new WeakMap(),
+    lastSoloWindow: null,
 
-      this._icon = new St.Icon({
-        icon_name: DEFAULT_ICON,
-        style_class: 'system-status-icon',
-      });
-      this.add_child(this._icon);
+    selectionId: initialId,
+    plan: resolveSelection(initialId),
+    planVersion: 0,
+    lampIndex: 0,
 
-      this._onSelect = onSelect;
-      this._items = new Map(); // id -> PopupMenuItem
+    pending: null,
+    flushId: 0,
+  };
+}
 
-      // Singles.
-      for (const [type, label] of EFFECT_LABELS) {
-        const item = new PopupMenu.PopupMenuItem(label);
-        item.setOrnament(type === EffectType.NONE
-          ? PopupMenu.Ornament.CHECK
-          : PopupMenu.Ornament.NONE);
-        item.connect('activate', () => this._select(type));
-        this.menu.addMenuItem(item);
-        this._items.set(type, item);
-      }
+function setSelection(id) {
+  if (!state) return;
+  state.selectionId = id;
+  state.plan = resolveSelection(id);
+  state.planVersion++;
+  journal(`Selection -> ${id}`);
+  refreshState();
+}
 
-      // Divider, then the menu presets (lamp presets intentionally excluded).
-      this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+// ===== flush buffer =====
+function scheduleFlush(work) {
+  if (!state) return;
+  const p = (state.pending ??= {});
+  if (work.reevaluate) p.reevaluate = true;
+  if (work.restoreMinimized) p.restoreMinimized = true;
+  if (work.justMinimizedWindow) p.justMinimizedWindow = work.justMinimizedWindow;
+  if (work.refresh) p.refresh = true;
 
-      for (const preset of MENU_PRESETS) {
-        const item = new PopupMenu.PopupMenuItem(preset.label);
-        item.setOrnament(PopupMenu.Ornament.NONE);
-        item.connect('activate', () => this._select(preset.id));
-        this.menu.addMenuItem(item);
-        this._items.set(preset.id, item);
-      }
+  if (state.flushId) return;
 
-      this._currentId = EffectType.NONE;
-      this._lampIndex = -1; // so the first left click lands on lamp 1
-      this._syncIcon();
+  state.flushId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+    if (state) {
+      state.flushId = 0;
+      flushPending();
     }
-
-    // Left click: close the menu if it's open, otherwise advance the lamp cycle.
-    // Right click: toggle the menu.
-    vfunc_event(event) {
-      if (event.type() === Clutter.EventType.BUTTON_PRESS) {
-        const button = event.get_button();
-        if (button === Clutter.BUTTON_PRIMARY) {
-          if (this.menu.isOpen)
-            this.menu.close();
-          else
-            this._cycleLamp();
-          return Clutter.EVENT_STOP;
-        }
-        if (button === Clutter.BUTTON_SECONDARY) {
-          this.menu.toggle();
-          return Clutter.EVENT_STOP;
-        }
-      }
-      return super.vfunc_event(event);
-    }
-
-    _cycleLamp() {
-      this._lampIndex = (this._lampIndex + 1) % LAMP_PRESETS.length;
-      const preset = LAMP_PRESETS[this._lampIndex];
-
-      // Clear any checkmark — a lamp is active, which isn't in the menu.
-      this._items.get(this._currentId)?.setOrnament(PopupMenu.Ornament.NONE);
-      this._currentId = preset.id;
-
-      this._syncIcon();
-      this._onSelect(preset.id);
-    }
-
-    _select(id) {
-      if (id === this._currentId) return;
-
-      this._items.get(this._currentId)?.setOrnament(PopupMenu.Ornament.NONE);
-      this._items.get(id)?.setOrnament(PopupMenu.Ornament.CHECK);
-      this._currentId = id;
-
-      // If the user picked the same lamp that's currently active, keep its
-      // index so the next left click continues from there.
-      const idx = lampIndexFor(id);
-      if (idx >= 0)
-        this._lampIndex = idx;
-
-      this._syncIcon();
-      this._onSelect(id);
-    }
-
-    _syncIcon() {
-      const lamp = LAMP_PRESETS.find(p => p.id === this._currentId);
-
-      // Reset the icon container's background class.
-      for (const p of LAMP_PRESETS)
-        this._icon.remove_style_class_name(p.cssClass);
-
-      if (!lamp) {
-        this._icon.gicon = null;
-        this._icon.icon_name = DEFAULT_ICON;
-        return;
-      }
-
-      const iconPath = GLib.build_filenamev([this._extensionPath, 'icons', lamp.iconFile]);
-      const file = Gio.File.new_for_path(iconPath);
-
-      if (file.query_exists(null)) {
-        this._icon.gicon = new Gio.FileIcon({ file });
-      } else {
-        // Fall back to the default icon if the file is missing.
-        this._icon.gicon = null;
-        this._icon.icon_name = DEFAULT_ICON;
-      }
-
-      this._icon.add_style_class_name(lamp.cssClass);
-    }
+    return GLib.SOURCE_REMOVE;
   });
+}
 
-// --- Extension --------------------------------------------------------------
-export default class WindowEffectExtension extends Extension {
-  _currentId = EffectType.NONE;
-  _indicator = null;
+function flushPending() {
+  if (!state || !state.pending) return;
+  const { reevaluate, restoreMinimized, justMinimizedWindow, refresh } = state.pending;
+  state.pending = null;
+  if (reevaluate)
+    ensureFocusedWindow(!!restoreMinimized, justMinimizedWindow ?? null);
+  else if (refresh)
+    refreshState();
+}
 
-  _effects = new Map();   // Meta.WindowActor -> ClutterEffect[]
-  _focusedActor = null;
+function cancelFlush() {
+  if (!state) return;
+  if (state.flushId) {
+    GLib.Source.remove(state.flushId);
+    state.flushId = 0;
+  }
+  state.pending = null;
+}
 
-  _mapId = 0;
-  _destroyId = 0;
-  _focusChangedId = 0;
+// ===== window queries =====
+function windowExistsOnCurrentWorkspace(win) {
+  if (!win) return false;
+  const type = win.get_window_type();
+  if (type !== Meta.WindowType.NORMAL && type !== Meta.WindowType.DIALOG) return false;
+  if (win.is_skip_taskbar()) return false;
+  const currentWorkspace = WorkspaceManager.get_active_workspace();
+  const winWorkspace = win.get_workspace();
+  if (!winWorkspace) return false;
+  if (!win.is_on_all_workspaces() && winWorkspace !== currentWorkspace) return false;
+  return true;
+}
 
-  enable() {
-    this._mapId = global.window_manager.connect('map', (wm, actor) => this._onWindowMapped(actor));
-    this._destroyId = global.window_manager.connect('destroy', (wm, actor) => this._onWindowDestroyed(actor));
-    this._focusChangedId = global.display.connect('notify::focus-window', () => this._onFocusChanged());
+function isEligible(win) {
+  return windowExistsOnCurrentWorkspace(win) && !win.minimized;
+}
 
-    this._indicator = new EffectMenuIndicator(this.path, (id) => this._applySelection(id));
-    Main.panel.addToStatusArea('window-effect-menu', this._indicator);
+function windowsOnCurrentWorkspace() {
+  return Display.list_all_windows().filter(windowExistsOnCurrentWorkspace);
+}
+
+function rectClippedToWorkArea(rect, workArea) {
+  const x = Math.max(rect.x, workArea.x);
+  const y = Math.max(rect.y, workArea.y);
+  const right = Math.min(rect.x + rect.width, workArea.x + workArea.width);
+  const bottom = Math.min(rect.y + rect.height, workArea.y + workArea.height);
+  return { x, y, width: right - x, height: bottom - y };
+}
+
+function rectsIntersect(a, b) {
+  return a.x < b.x + b.width && a.x + a.width > b.x &&
+    a.y < b.y + b.height && a.y + a.height > b.y;
+}
+
+function isCoveredFullyOrPartially(window) {
+  if (window.minimized) return false;
+  const windows = Display.sort_windows_by_stacking(windowsOnCurrentWorkspace());
+  const targetIndex = windows.indexOf(window);
+  if (targetIndex === -1) return false;
+  const workArea = WorkspaceManager.get_active_workspace()
+    .get_work_area_for_monitor(window.get_monitor());
+  const target = rectClippedToWorkArea(window.get_frame_rect(), workArea);
+  if (target.width <= 0 || target.height <= 0) return false;
+  for (let i = targetIndex + 1; i < windows.length; i++) {
+    const topWin = windows[i];
+    if (topWin.minimized) continue;
+    const top = rectClippedToWorkArea(topWin.get_frame_rect(), workArea);
+    if (top.width <= 0 || top.height <= 0) continue;
+    if (rectsIntersect(target, top)) return true;
+  }
+  return false;
+}
+
+// ===== effect application (version-tracked diff) =====
+
+function applyDimEffects(actor) {
+  if (!state) return;
+  const plan = state.plan;
+
+  if (state.appliedVersionByActor.get(actor) === state.planVersion) {
+    state.dimmed.add(actor);
+    return;
   }
 
-  _isFocusedActor(actor) {
-    const win = actor.get_meta_window();
-    return win && win === global.display.focus_window;
+  const oldEffects = state.effectsByActor.get(actor);
+  if (oldEffects)
+    for (const e of oldEffects) actor.remove_effect(e);
+
+  actor.opacity = plan.opacity;
+
+  const newEffects = plan.effects;
+  newEffects.forEach((e, i) => actor.add_effect_with_name(`dim-effect-${i}`, e));
+
+  state.effectsByActor.set(actor, newEffects);
+  state.appliedVersionByActor.set(actor, state.planVersion);
+  state.dimmed.add(actor);
+}
+
+function removeDimEffects(actor) {
+  actor.opacity = DEFAULT_OPACITY;
+
+  const effects = state.effectsByActor.get(actor);
+  if (effects)
+    for (const e of effects) actor.remove_effect(e);
+
+  state.effectsByActor.delete(actor);
+  state.appliedVersionByActor.delete(actor);
+  state.dimmed.delete(actor);
+}
+
+function undimAll() {
+  for (const actor of [...state.dimmed])
+    removeDimEffects(actor);
+  state.dimmed.clear();
+}
+
+// ===== unified refresh =====
+function refreshState() {
+  if (!state) return;
+
+  const focusWin = Display.get_focus_window();
+  const eligible = windowsOnCurrentWorkspace().filter(isEligible);
+
+  if (!focusWin || !eligible.includes(focusWin)) {
+    undimAll();
+    focusedBorder.remove();
+    return;
   }
 
-  _currentSelection() {
-    return resolveSelection(this._currentId);
+  const focusedActor = focusWin.get_compositor_private();
+  if (focusedActor) removeDimEffects(focusedActor);
+
+  const others = eligible.filter(w => w !== focusWin);
+  const othersActors = new Set();
+  for (const other of others) {
+    const actor = other.get_compositor_private();
+    if (!actor) continue;
+    othersActors.add(actor);
+    applyDimEffects(actor);
   }
 
-  _attachEffect(actor) {
-    if (this._effects.has(actor)) return;
+  for (const actor of [...state.dimmed]) {
+    if (actor !== focusedActor && !othersActors.has(actor))
+      removeDimEffects(actor);
+  }
 
-    const sel = this._currentSelection();
-    if (sel.isNone) return;
+  focusedBorder.update(focusWin);
+}
 
-    actor.opacity = sel.opacity;
+// ===== border =====
+const FOCUSED_BORDER_CLASS = 'focused-border';
+const focusedBorder = makeBorderTracker(FOCUSED_BORDER_CLASS);
 
-    sel.effects.forEach((effect, i) => {
-      actor.add_effect_with_name(`window-effect-${i}`, effect);
+function makeBorderTracker(cssClass) {
+  let border = null;
+  let trackedActor = null;
+  let signals = [];
+
+  function disconnectSignals() {
+    const win = trackedActor?.get_meta_window();
+    if (win) {
+      for (const id of signals) if (id) win.disconnect(id);
+    }
+    signals = [];
+  }
+
+  function remove() {
+    disconnectSignals();
+    if (border?.get_parent())
+      border.get_parent().remove_child(border);
+    if (border) { border.destroy(); border = null; }
+    trackedActor = null;
+  }
+
+  function restack() {
+    if (!border || !trackedActor || !border.get_parent()) return;
+    global.get_window_group().set_child_above_sibling(border, trackedActor);
+  }
+
+  function update(win) {
+    if (!win) { remove(); return; }
+    const actor = win.get_compositor_private();
+    if (!actor || !actor.get_parent()) { remove(); return; }
+    if (trackedActor !== actor) {
+      remove();
+      border = new St.Bin({ style_class: cssClass, reactive: false });
+      trackedActor = actor;
+      const onGeometryChanged = () => scheduleFlush({ refresh: true });
+      signals = [
+        win.connect('position-changed', onGeometryChanged),
+        win.connect('size-changed', onGeometryChanged),
+        win.connect('workspace-changed', onGeometryChanged),
+      ];
+      actor.get_parent().add_child(border);
+      restack();
+    }
+    const rect = win.get_frame_rect();
+    border.set_position(rect.x, rect.y);
+    border.set_size(rect.width, rect.height);
+    restack();
+  }
+
+  function removeIfActorMatches(actor) {
+    if (actor === trackedActor) remove();
+  }
+
+  function destroy() { remove(); }
+
+  return { update, remove, restack, removeIfActorMatches, destroy };
+}
+
+function borderRestack() { focusedBorder.restack(); }
+function borderRemoveIfMatches(actor) { focusedBorder.removeIfActorMatches(actor); }
+function borderDestroy() { focusedBorder.destroy(); }
+
+// ===== focus policy =====
+function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = null) {
+  const allWindows = windowsOnCurrentWorkspace();
+  if (allWindows.length === 0) {
+    state.lastSoloWindow = null;
+    refreshState();
+    return;
+  }
+  const visible = allWindows.filter(w => !w.minimized);
+
+  if (allWindows.length === 1) {
+    const win = allWindows[0];
+    const isNewSoloState = state.lastSoloWindow !== win;
+    state.lastSoloWindow = win;
+    if (win.minimized && !restoreMinimized) { refreshState(); return; }
+    if (win.minimized) win.unminimize();
+    const wasMaximized = win.get_maximized() === Meta.MaximizeFlags.BOTH;
+    const shouldForceMaximize = isNewSoloState || restoreMinimized;
+    if (!wasMaximized && shouldForceMaximize) win.maximize(3);
+    win.get_workspace().activate_with_focus(win, global.get_current_time());
+    refreshState();
+    return;
+  }
+
+  state.lastSoloWindow = null;
+
+  if (visible.length === 0 && allWindows.length === 2) {
+    if (!justMinimizedWindow && !restoreMinimized) { refreshState(); return; }
+    const other = justMinimizedWindow
+      ? allWindows.find(w => w !== justMinimizedWindow)
+      : allWindows.reduce((a, b) => a.get_user_time() > b.get_user_time() ? a : b);
+    if (!other) return;
+    other.unminimize();
+    other.maximize(3);
+    other.get_workspace().activate_with_focus(other, global.get_current_time());
+    refreshState();
+    return;
+  }
+
+  if (visible.length === 0) { refreshState(); return; }
+  const uncovered = visible.filter(w => !isCoveredFullyOrPartially(w));
+  if (uncovered.length === 0) { refreshState(); return; }
+
+  const target = uncovered.length === 1
+    ? uncovered[0]
+    : uncovered.reduce((a, b) => a.get_user_time() > b.get_user_time() ? a : b);
+
+  target.get_workspace().activate_with_focus(target, global.get_current_time());
+  refreshState();
+}
+
+// ===== panel indicator =====
+const BIN_SIZE = 64;
+
+class DimLevelIndicator extends PanelMenu.Button {
+  static { GObject.registerClass(this); }
+
+  constructor(extensionPath, onSelect) {
+    super(0.0, 'DimLevelIndicator');
+
+    this._extensionPath = extensionPath;
+    this._onSelect = onSelect;
+
+    this._icon = new St.Icon({
+      icon_size: BIN_SIZE,
+      style_class: 'system-status-icon',
     });
 
-    this._effects.set(actor, sel.effects);
-  }
+    this._iconBin = new St.Bin({
+      child: this._icon,
+      style_class: 'lamp-icon-bin',
+      width: BIN_SIZE,
+      height: BIN_SIZE,
+      x_align: Clutter.ActorAlign.CENTER,
+      y_align: Clutter.ActorAlign.CENTER,
+    });
+    this.add_child(this._iconBin);
 
-  _detachEffect(actor) {
-    if (!this._effects.has(actor)) return;
+    this._items = new Map(); // id -> PopupMenuItem
 
-    const effects = this._effects.get(actor);
-    for (const effect of effects)
-      actor.remove_effect(effect);
-
-    actor.opacity = DEFAULT_OPACITY;
-    this._effects.delete(actor);
-  }
-
-  _detachFromAllWindows() {
-    for (const actor of Array.from(this._effects.keys()))
-      this._detachEffect(actor);
-  }
-
-  _attachToAllWindows() {
-    const actors = global.get_window_actors();
-    this._focusedActor = actors.find(a => this._isFocusedActor(a)) || null;
-
-    for (const actor of actors) {
-      if (actor !== this._focusedActor) this._attachEffect(actor);
+    // Singles.
+    for (const [type, label] of EFFECT_LABELS) {
+      const item = new PopupMenu.PopupMenuItem(label);
+      item.setOrnament(type === EffectType.NONE
+        ? PopupMenu.Ornament.CHECK
+        : PopupMenu.Ornament.NONE);
+      item.connect('activate', () => this._selectFromMenu(type));
+      this.menu.addMenuItem(item);
+      this._items.set(type, item);
     }
+
+    // Separator, then the presets. Lamp-only entries are absent.
+    this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+    for (const preset of MENU_PRESETS) {
+      const item = new PopupMenu.PopupMenuItem(preset.label);
+      item.setOrnament(PopupMenu.Ornament.NONE);
+      item.connect('activate', () => this._selectFromMenu(preset.id));
+      this.menu.addMenuItem(item);
+      this._items.set(preset.id, item);
+    }
+
+    this._currentId = state.selectionId;
+    this._lampIndex = state.lampIndex;
+    this._syncIcon();
   }
 
-  _applySelection(id) {
-    this._detachFromAllWindows();
+  vfunc_event(event) {
+    if (event.type() === Clutter.EventType.BUTTON_PRESS) {
+      const button = event.get_button();
+
+      if (button === Clutter.BUTTON_PRIMARY) {
+        if (this.menu.isOpen) this.menu.close();
+        else this._cycleLamp();
+        return Clutter.EVENT_STOP;
+      }
+
+      if (button === Clutter.BUTTON_SECONDARY) {
+        this.menu.toggle();
+        return Clutter.EVENT_STOP;
+      }
+    }
+    return super.vfunc_event(event);
+  }
+
+  _cycleLamp() {
+    // Clear whatever checkmark is showing first — the lamp we're leaving
+    // may or may not correspond to a menu item.
+    this._items.get(this._currentId)?.setOrnament(PopupMenu.Ornament.NONE);
+
+    this._lampIndex = (this._lampIndex + 1) % LAMP_PRESETS.length;
+    const preset = LAMP_PRESETS[this._lampIndex];
+    this._currentId = preset.id;
+
+    // Lamp 0 shares its id with the menu's None entry, so mark it.
+    // Lamps 1–3 have no menu item; the panel icon carries the state.
+    if (this._items.has(preset.id))
+      this._items.get(preset.id).setOrnament(PopupMenu.Ornament.CHECK);
+
+    this._syncIcon();
+    this._onSelect(preset.id);
+  }
+
+  _selectFromMenu(id) {
+    if (id === this._currentId) return;
+
+    this._items.get(this._currentId)?.setOrnament(PopupMenu.Ornament.NONE);
+    this._items.get(id)?.setOrnament(PopupMenu.Ornament.CHECK);
     this._currentId = id;
 
-    if (id !== EffectType.NONE) {
-      this._attachToAllWindows();
-    } else {
-      this._focusedActor = null;
+    // If the menu pick happens to be a lamp (currently only the None state),
+    // keep the cycle index in sync so the next left click continues from it.
+    const idx = findLampIndex(id);
+    if (idx >= 0) this._lampIndex = idx;
+
+    this._syncIcon();
+    this._onSelect(id);
+  }
+
+  _syncIcon() {
+    for (const p of LAMP_PRESETS)
+      if (p.cssClass) this._iconBin.remove_style_class_name(p.cssClass);
+
+    const lamp = LAMP_PRESETS.find(p => p.id === this._currentId);
+
+    // Non-lamp selection, or a lamp with no icon file (the None lamp):
+    // fall back to the default icon.
+    if (!lamp || !lamp.iconFile) {
+      this._icon.gicon = null;
+      this._icon.icon_name = DEFAULT_ICON;
+      return;
     }
-  }
 
-  _onWindowMapped(actor) {
-    if (this._currentId === EffectType.NONE) return;
+    const iconPath = GLib.build_filenamev([this._extensionPath, 'icons', lamp.iconFile]);
+    const file = Gio.File.new_for_path(iconPath);
 
-    if (this._isFocusedActor(actor)) {
-      if (this._focusedActor && this._focusedActor !== actor)
-        this._attachEffect(this._focusedActor);
-      this._focusedActor = actor;
+    if (file.query_exists(null)) {
+      this._icon.gicon = new Gio.FileIcon({ file });
     } else {
-      this._attachEffect(actor);
+      journal(`Icon file not found: ${iconPath}`);
+      this._icon.gicon = null;
+      this._icon.icon_name = DEFAULT_ICON;
     }
+
+    if (lamp.cssClass) this._iconBin.add_style_class_name(lamp.cssClass);
   }
+}
 
-  _onWindowDestroyed(actor) {
-    this._effects.delete(actor);
-    if (this._focusedActor === actor) this._focusedActor = null;
-  }
+// ===== extension =====
+export default class FocusedWindowManagerExtension extends Extension {
 
-  _onFocusChanged() {
-    if (this._currentId === EffectType.NONE) return;
+  enable() {
+    initLogging(this.uuid, { output: 'file', level: 'debug', enabled: false });
+    journal(`Enabled`);
 
-    if (this._focusedActor)
-      this._attachEffect(this._focusedActor);
+    initState();
 
-    const focusWindow = global.display.focus_window;
-    const newFocusedActor = focusWindow
-      ? global.get_window_actors().find(a => a.get_meta_window() === focusWindow)
-      : null;
+    this._connections = [
+      [Display, 'notify::focus-window', this.onFocusWindowChanged.bind(this)],
+      [WorkspaceManager, 'active-workspace-changed', this.onWorkspaceChanged.bind(this)],
+      [Display, 'window-created', this.onWindowCreated.bind(this)],
+      [WindowManager, 'destroy', this.onWindowDestroyed.bind(this)],
+      [WindowManager, 'minimize', this.onWindowMinimized.bind(this)],
+      [WindowManager, 'unminimize', this.onWindowUnminimized.bind(this)],
+      [Display, 'restacked', this.onRestacked.bind(this)],
+    ].map(([obj, signal, handler]) => [obj, obj.connect(signal, handler)]);
 
-    if (newFocusedActor)
-      this._detachEffect(newFocusedActor);
+    this._indicator = new DimLevelIndicator(this.path, (id) => setSelection(id));
+    Main.panel.addToStatusArea(`${this.uuid}`, this._indicator);
 
-    this._focusedActor = newFocusedActor || null;
+    refreshState();
   }
 
   disable() {
-    this._detachFromAllWindows();
+    for (const [obj, id] of this._connections)
+      obj.disconnect(id);
+    this._connections = null;
 
-    if (this._mapId) global.window_manager.disconnect(this._mapId);
-    if (this._destroyId) global.window_manager.disconnect(this._destroyId);
-    if (this._focusChangedId) global.display.disconnect(this._focusChangedId);
+    this._indicator?.destroy();
+    this._indicator = null;
 
-    this._mapId = 0;
-    this._destroyId = 0;
-    this._focusChangedId = 0;
+    undimAll();
+    borderDestroy();
+    cancelFlush();
+    state = null;
 
-    if (this._indicator) {
-      this._indicator.destroy();
-      this._indicator = null;
-    }
+    flushBuffer();
+    stopLogging();
+  }
 
-    this._currentId = EffectType.NONE;
-    this._focusedActor = null;
+  // ---- signal handlers ----
+  onFocusWindowChanged() { scheduleFlush({ refresh: true }); }
+  onWorkspaceChanged() { scheduleFlush({ reevaluate: true, restoreMinimized: true }); }
+  onWindowCreated() { scheduleFlush({ reevaluate: true }); }
+
+  onWindowDestroyed(wm, actor) {
+    borderRemoveIfMatches(actor);
+    state.dimmed.delete(actor);
+    scheduleFlush({ reevaluate: true });
+  }
+
+  onWindowMinimized(wm, actor) {
+    borderRemoveIfMatches(actor);
+    state.dimmed.delete(actor);
+    scheduleFlush({ reevaluate: true, justMinimizedWindow: actor.get_meta_window() });
+  }
+
+  onWindowUnminimized() { scheduleFlush({ reevaluate: true }); }
+
+  onRestacked() {
+    borderRestack();
+    scheduleFlush({ reevaluate: true });
   }
 }
