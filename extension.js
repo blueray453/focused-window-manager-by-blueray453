@@ -68,10 +68,13 @@ const colorize = (tint) => ({ type: EffectType.COLORIZE, tint });
 const blur = (count = 3) => ({ type: EffectType.BLUR, count });
 const shader = () => ({ type: EffectType.SHADER });
 
+// ===== separator marker =====
+// A single frozen constant used in PRESETS to mark where a separator should
+// appear in the menu. It carries no id, so it can never be selected, resolved,
+// or confused with a preset.
+const SEPARATOR = Object.freeze({ separator: true });
+
 // ===== single effect builder =====
-// Turns spec objects into freshly-constructed Clutter effect instances.
-// The only place effects are instantiated. Every preset in PRESETS flows
-// through here — there is no second path and no hidden defaults.
 function buildEffectsFromSpecs(specs) {
   const effects = [];
   for (const spec of specs) {
@@ -104,7 +107,6 @@ function buildEffectsFromSpecs(specs) {
       case EffectType.COLORIZE: {
         const t = spec.tint ?? [0x78, 0x84, 0x96, 0x80];
         const e = new Clutter.ColorizeEffect();
-        // Cogl.Color — Clutter.Color was removed in GNOME 47.
         e.set_tint(new Cogl.Color({
           red: t[0], green: t[1], blue: t[2], alpha: t[3],
         }));
@@ -121,16 +123,17 @@ function buildEffectsFromSpecs(specs) {
 }
 
 // ===== master preset registry — the single source of truth =====
-// Every parameter that affects what a preset looks like lives here. There is
-// no second table, no hidden default, no type-shorthand that reads from
-// somewhere else. Lamps and the menu are both views onto this list.
+// The array below IS the menu order (with one exception: entries whose id is
+// referenced from LAMP_PRESETS are filtered out of the menu — see below).
 //
-// A preset has:
+// A preset entry has:
 //   id       — unique key
 //   label    — menu text
-//   group    — used only for menu separators
 //   opacity  — 0–255
 //   effects  — [spec, ...] built by the helpers above
+//
+// A SEPARATOR entry adds a horizontal line in the menu at that exact position.
+// Separators are explicit — no implicit group logic, no phantom sections.
 const PRESETS = [
   // ---- lamp slots (referenced by LAMP_PRESETS below) ----------------------
   {
@@ -153,84 +156,87 @@ const PRESETS = [
     id: 'lamp-strong', label: 'Lamp · Strong', opacity: 255,
     effects: [bc([-0.5, -0.5, -0.5])],
   },
+
   // ---- singles ------------------------------------------------------------
+  SEPARATOR,
   {
-    id: 'desaturate', label: 'Clutter.DesaturateEffect', group: 'Effects',
+    id: 'desaturate', label: 'Clutter.DesaturateEffect',
     effects: [desat(0.85)],
   },
   {
-    id: 'blur', label: 'Clutter.BlurEffect', group: 'Effects',
+    id: 'blur', label: 'Clutter.BlurEffect',
     effects: [blur(3)],
   },
   {
-    id: 'brightness_contrast', label: 'Clutter.BrightnessContrastEffect', group: 'Effects',
+    id: 'brightness_contrast', label: 'Clutter.BrightnessContrastEffect',
     effects: [bc([-0.12, -0.10, -0.06], [-0.06, -0.06, -0.04])],
   },
   {
-    id: 'colorize', label: 'Clutter.ColorizeEffect', group: 'Effects',
+    id: 'colorize', label: 'Clutter.ColorizeEffect',
     effects: [colorize([0x78, 0x84, 0x96, 0x80])],
   },
   {
-    id: 'shader', label: 'Clutter.ShaderEffect', group: 'Effects',
+    id: 'shader', label: 'Clutter.ShaderEffect',
     effects: [shader()],
   },
 
   // ---- opacity-only -------------------------------------------------------
-  { id: 'fade-70', label: 'Fade · 70%', group: 'Opacity', opacity: 180, effects: [] },
-  { id: 'fade-50', label: 'Fade · 50%', group: 'Opacity', opacity: 128, effects: [] },
+  SEPARATOR,
+  { id: 'fade-70', label: 'Fade · 70%', opacity: 180, effects: [] },
+  { id: 'fade-50', label: 'Fade · 50%', opacity: 128, effects: [] },
 
-  // ---- tints — one colorize effect per preset, each a different tint ------
-  { id: 'tint-warm', label: 'Tint · Warm', group: 'Tints', opacity: 240, effects: [colorize([255, 180, 100, 0x60])] },
-  { id: 'tint-cool', label: 'Tint · Cool', group: 'Tints', opacity: 240, effects: [colorize([140, 180, 220, 0x70])] },
-  { id: 'tint-sepia', label: 'Tint · Sepia', group: 'Tints', opacity: 240, effects: [colorize([180, 140, 90, 0x80])] },
-  { id: 'tint-rose', label: 'Tint · Rose', group: 'Tints', opacity: 240, effects: [colorize([220, 160, 180, 0x60])] },
-  { id: 'tint-mint', label: 'Tint · Mint', group: 'Tints', opacity: 240, effects: [colorize([140, 210, 180, 0x60])] },
-  { id: 'tint-dusk', label: 'Tint · Dusk', group: 'Tints', opacity: 240, effects: [colorize([140, 120, 180, 0x70])] },
+  // ---- tints --------------------------------------------------------------
+  SEPARATOR,
+  { id: 'tint-warm', label: 'Tint · Warm', opacity: 240, effects: [colorize([255, 180, 100, 0x60])] },
+  { id: 'tint-cool', label: 'Tint · Cool', opacity: 240, effects: [colorize([140, 180, 220, 0x70])] },
+  { id: 'tint-sepia', label: 'Tint · Sepia', opacity: 240, effects: [colorize([180, 140, 90, 0x80])] },
+  { id: 'tint-rose', label: 'Tint · Rose', opacity: 240, effects: [colorize([220, 160, 180, 0x60])] },
+  { id: 'tint-mint', label: 'Tint · Mint', opacity: 240, effects: [colorize([140, 210, 180, 0x60])] },
+  { id: 'tint-dusk', label: 'Tint · Dusk', opacity: 240, effects: [colorize([140, 120, 180, 0x70])] },
 
   // ---- combos -------------------------------------------------------------
+  SEPARATOR,
   {
-    id: 'slate', label: 'Slate Tint', group: 'Combos', opacity: 220,
+    id: 'slate', label: 'Slate Tint', opacity: 220,
     effects: [colorize([0x78, 0x84, 0x96, 0x80])],
   },
   {
-    id: 'soft-blur', label: 'Soft Blur', group: 'Combos', opacity: 200,
+    id: 'soft-blur', label: 'Soft Blur', opacity: 200,
     effects: [blur(3)],
   },
   {
-    id: 'dim', label: 'Dim', group: 'Combos', opacity: 230,
+    id: 'dim', label: 'Dim', opacity: 230,
     effects: [bc([-0.12, -0.10, -0.06], [-0.06, -0.06, -0.04])],
   },
   {
-    id: 'focus', label: 'Focus', group: 'Combos', opacity: 200,
+    id: 'focus', label: 'Focus', opacity: 200,
     effects: [bc([-0.12, -0.10, -0.06], [-0.06, -0.06, -0.04]), desat(0.85)],
   },
   {
-    id: 'recede', label: 'Recede', group: 'Combos', opacity: 170,
+    id: 'recede', label: 'Recede', opacity: 170,
     effects: [bc([-0.12, -0.10, -0.06], [-0.06, -0.06, -0.04]), desat(0.85)],
   },
   {
-    id: 'midnight', label: 'Midnight', group: 'Combos', opacity: 200,
+    id: 'midnight', label: 'Midnight', opacity: 200,
     effects: [bc([-0.12, -0.10, -0.06], [-0.06, -0.06, -0.04]), colorize([0x78, 0x84, 0x96, 0x80])],
   },
   {
-    id: 'ghost', label: 'Ghost', group: 'Combos', opacity: 140,
+    id: 'ghost', label: 'Ghost', opacity: 140,
     effects: [bc([-0.12, -0.10, -0.06], [-0.06, -0.06, -0.04]), desat(0.85), blur(3)],
   },
   {
-    id: 'dream', label: 'Dream', group: 'Combos', opacity: 220,
+    id: 'dream', label: 'Dream', opacity: 220,
     effects: [blur(3), colorize([0x78, 0x84, 0x96, 0x80])],
   },
-
-  // ---- combos using custom colorize tints ---------------------------------
   {
-    id: 'sunset', label: 'Sunset', group: 'Combos', opacity: 220,
+    id: 'sunset', label: 'Sunset', opacity: 220,
     effects: [
       colorize([255, 140, 80, 0x60]),
       bc([-0.05, -0.05, -0.02], [-0.04, -0.04, -0.04]),
     ],
   },
   {
-    id: 'arctic', label: 'Arctic', group: 'Combos', opacity: 220,
+    id: 'arctic', label: 'Arctic', opacity: 220,
     effects: [
       colorize([160, 200, 230, 0x70]),
       bc([0.02, 0.02, 0.05], [0.03, 0.03, 0.03]),
@@ -239,9 +245,6 @@ const PRESETS = [
 ];
 
 // ===== lamp view =====
-// Each slot names a PRESETS id and pairs it with an icon + tint class.
-// To change what a lamp does, edit its PRESETS entry; to change which
-// presets are in the cycle, reorder or swap entries here.
 const LAMP_PRESETS = [
   { id: 'none', iconFile: 'icon1-symbolic.svg', cssClass: 'lamp-level-1' },
   { id: 'lamp-dim', iconFile: 'icon2-symbolic.svg', cssClass: 'lamp-level-2' },
@@ -249,13 +252,35 @@ const LAMP_PRESETS = [
   { id: 'lamp-focus', iconFile: 'icon4-symbolic.svg', cssClass: 'lamp-level-4' },
 ];
 
-// ===== menu view =====
-// Everything in PRESETS that isn't a lamp.
 const LAMP_IDS = new Set(LAMP_PRESETS.map(l => l.id));
-const MENU_PRESETS = PRESETS.filter(p => !LAMP_IDS.has(p.id));
+
+// ===== menu view =====
+// Take PRESETS, drop any entry whose id is a lamp, keep separators as markers,
+// then clean up: no leading separator, no trailing separator, no two adjacent
+// separators. The result is a 1:1 map of what the menu will contain.
+function buildMenuEntries() {
+  const filtered = PRESETS.filter(p => p.separator || !LAMP_IDS.has(p.id));
+
+  const result = [];
+  for (const entry of filtered) {
+    if (entry.separator) {
+      if (result.length === 0) continue;                 // skip leading
+      if (result[result.length - 1].separator) continue; // skip consecutive
+      result.push(entry);
+    } else {
+      result.push(entry);
+    }
+  }
+  while (result.length > 0 && result[result.length - 1].separator)
+    result.pop();                                        // skip trailing
+
+  return result;
+}
+
+const MENU_ENTRIES = buildMenuEntries();
 
 function findPreset(id) {
-  return PRESETS.find(p => p.id === id);
+  return PRESETS.find(p => !p.separator && p.id === id);
 }
 
 function findLampIndex(id) {
@@ -618,18 +643,19 @@ class DimLevelIndicator extends PanelMenu.Button {
 
     this._items = new Map(); // preset id -> PopupMenuItem
 
-    let lastGroup = undefined;
-    for (const preset of MENU_PRESETS) {
-      const group = preset.group ?? null;
-      if (lastGroup !== undefined && group !== lastGroup)
+    // MENU_ENTRIES is PRESETS with lamps removed and separators pre-cleaned.
+    // Every entry is either a SEPARATOR marker or a preset — no implicit logic.
+    for (const entry of MENU_ENTRIES) {
+      if (entry.separator) {
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-      lastGroup = group;
+        continue;
+      }
 
-      const item = new PopupMenu.PopupMenuItem(preset.label);
+      const item = new PopupMenu.PopupMenuItem(entry.label);
       item.setOrnament(PopupMenu.Ornament.NONE);
-      item.connect('activate', () => this._selectFromMenu(preset.id));
+      item.connect('activate', () => this._selectFromMenu(entry.id));
       this.menu.addMenuItem(item);
-      this._items.set(preset.id, item);
+      this._items.set(entry.id, item);
     }
 
     this._currentId = state.selectionId;
