@@ -138,10 +138,6 @@ const PRESETS = [
     effects: [],
   },
   {
-    id: 'lamp-strong', label: 'Lamp · Strong', opacity: 255,
-    effects: [bc([-0.5, -0.5, -0.5])],
-  },
-  {
     id: 'lamp-dim', label: 'Lamp · Dim', opacity: 255,
     effects: [bc([-0.2, -0.2, -0.2])],
   },
@@ -153,7 +149,10 @@ const PRESETS = [
     id: 'lamp-deep', label: 'Lamp · Deep', opacity: 170,
     effects: [bc([-0.3, -0.3, -0.3]), desat(1.0), blur(1)],
   },
-
+  {
+    id: 'lamp-strong', label: 'Lamp · Strong', opacity: 255,
+    effects: [bc([-0.5, -0.5, -0.5])],
+  },
   // ---- singles ------------------------------------------------------------
   {
     id: 'desaturate', label: 'Clutter.DesaturateEffect', group: 'Effects',
