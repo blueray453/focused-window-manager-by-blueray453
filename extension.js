@@ -138,6 +138,10 @@ const PRESETS = [
     effects: [],
   },
   {
+    id: 'lamp-strong', label: 'Lamp · Strong', opacity: 255,
+    effects: [bc([-0.5, -0.5, -0.5])],
+  },
+  {
     id: 'lamp-dim', label: 'Lamp · Dim', opacity: 255,
     effects: [bc([-0.2, -0.2, -0.2])],
   },
