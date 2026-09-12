@@ -57,7 +57,7 @@ const EffectType = {
 };
 
 const DEFAULT_OPACITY = 255;
-const DEFAULT_ICON = 'applications-graphics-symbolic';
+const DEFAULT_ICON = 'icon4-symbolic.svg';
 
 // ===== spec helpers =====
 // Small constructors so preset entries stay readable. Each returns a plain
@@ -246,10 +246,10 @@ const PRESETS = [
 
 // ===== lamp view =====
 const LAMP_PRESETS = [
-  { id: 'none', iconFile: 'icon1-symbolic.svg', cssClass: 'lamp-level-1' },
-  { id: 'lamp-dim', iconFile: 'icon2-symbolic.svg', cssClass: 'lamp-level-2' },
-  { id: 'tint-cool', iconFile: 'icon3-symbolic.svg', cssClass: 'lamp-level-3' },
-  { id: 'lamp-focus', iconFile: 'icon4-symbolic.svg', cssClass: 'lamp-level-4' },
+  { id: 'none', iconFile: 'icon0-symbolic.svg', cssClass: 'lamp-level-0' },
+  { id: 'lamp-dim', iconFile: 'icon1-symbolic.svg', cssClass: 'lamp-level-1' },
+  { id: 'tint-cool', iconFile: 'icon2-symbolic.svg', cssClass: 'lamp-level-2' },
+  { id: 'lamp-focus', iconFile: 'icon3-symbolic.svg', cssClass: 'lamp-level-3' },
 ];
 
 const LAMP_IDS = new Set(LAMP_PRESETS.map(l => l.id));
@@ -643,8 +643,6 @@ class DimLevelIndicator extends PanelMenu.Button {
 
     this._items = new Map(); // preset id -> PopupMenuItem
 
-    // MENU_ENTRIES is PRESETS with lamps removed and separators pre-cleaned.
-    // Every entry is either a SEPARATOR marker or a preset — no implicit logic.
     for (const entry of MENU_ENTRIES) {
       if (entry.separator) {
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
@@ -699,27 +697,15 @@ class DimLevelIndicator extends PanelMenu.Button {
     this._items.get(id)?.setOrnament(PopupMenu.Ornament.CHECK);
     this._currentId = id;
 
-    // A menu pick is never a lamp (lamps are excluded from the menu), so the
-    // next left click starts fresh from LAMP_PRESETS[0].
     this._lampIndex = -1;
 
     this._syncIcon();
     this._onSelect(id);
   }
 
-  _syncIcon() {
-    for (const slot of LAMP_PRESETS)
-      this._iconBin.remove_style_class_name(slot.cssClass);
-
-    const slot = LAMP_PRESETS.find(l => l.id === this._currentId);
-
-    if (!slot) {
-      this._icon.gicon = null;
-      this._icon.icon_name = DEFAULT_ICON;
-      return;
-    }
-
-    const iconPath = GLib.build_filenamev([this._extensionPath, 'icons', slot.iconFile]);
+  // New helper to load custom SVG files from the extension's icons/ folder
+  _loadIconFile(filename) {
+    const iconPath = GLib.build_filenamev([this._extensionPath, 'icons', filename]);
     const file = Gio.File.new_for_path(iconPath);
 
     if (file.query_exists(null)) {
@@ -727,9 +713,34 @@ class DimLevelIndicator extends PanelMenu.Button {
     } else {
       journal(`Icon file not found: ${iconPath}`);
       this._icon.gicon = null;
-      this._icon.icon_name = DEFAULT_ICON;
+      this._icon.icon_name = 'applications-graphics-symbolic'; // Absolute fallback
+    }
+  }
+
+  _syncIcon() {
+    // 1. Remove all existing lamp classes (including lamp-level-4)
+    for (const slot of LAMP_PRESETS)
+      this._iconBin.remove_style_class_name(slot.cssClass);
+    this._iconBin.remove_style_class_name('lamp-level-4');
+
+    // 2. If _lampIndex is -1, the selection came from the menu.
+    //    Use the default icon and apply the lamp-level-4 class.
+    if (this._lampIndex === -1) {
+      this._loadIconFile(DEFAULT_ICON);
+      this._iconBin.add_style_class_name('lamp-level-4');
+      return;
     }
 
+    // 3. Otherwise, use the icon from the LAMP_PRESETS cycle
+    const slot = LAMP_PRESETS[this._lampIndex];
+    if (!slot) {
+      // Fallback just in case
+      this._loadIconFile(DEFAULT_ICON);
+      this._iconBin.add_style_class_name('lamp-level-4');
+      return;
+    }
+
+    this._loadIconFile(slot.iconFile);
     this._iconBin.add_style_class_name(slot.cssClass);
   }
 }
