@@ -60,8 +60,6 @@ const DEFAULT_OPACITY = 255;
 const DEFAULT_ICON = 'icon4-symbolic.svg';
 
 // ===== spec helpers =====
-// Small constructors so preset entries stay readable. Each returns a plain
-// spec object — nothing here constructs the actual Clutter effect.
 const bc = (brightness, contrast = [0, 0, 0]) => ({ type: EffectType.BRIGHTNESS_CONTRAST, brightness, contrast });
 const desat = (factor = 1.0) => ({ type: EffectType.DESATURATE, factor });
 const colorize = (tint) => ({ type: EffectType.COLORIZE, tint });
@@ -69,9 +67,6 @@ const blur = (count = 3) => ({ type: EffectType.BLUR, count });
 const shader = () => ({ type: EffectType.SHADER });
 
 // ===== separator marker =====
-// A single frozen constant used in PRESETS to mark where a separator should
-// appear in the menu. It carries no id, so it can never be selected, resolved,
-// or confused with a preset.
 const SEPARATOR = Object.freeze({ separator: true });
 
 // ===== single effect builder =====
@@ -123,17 +118,8 @@ function buildEffectsFromSpecs(specs) {
 }
 
 // ===== master preset registry — the single source of truth =====
-// The array below IS the menu order (with one exception: entries whose id is
-// referenced from LAMP_PRESETS are filtered out of the menu — see below).
-//
-// A preset entry has:
-//   id       — unique key
-//   label    — menu text
-//   opacity  — 0–255
-//   effects  — [spec, ...] built by the helpers above
-//
-// A SEPARATOR entry adds a horizontal line in the menu at that exact position.
-// Separators are explicit — no implicit group logic, no phantom sections.
+// The array below IS the menu order (entries whose id is referenced from
+// LAMP_PRESETS are filtered out of the menu).
 const PRESETS = [
   // ---- lamp slots (referenced by LAMP_PRESETS below) ----------------------
   {
@@ -255,9 +241,6 @@ const LAMP_PRESETS = [
 const LAMP_IDS = new Set(LAMP_PRESETS.map(l => l.id));
 
 // ===== menu view =====
-// Take PRESETS, drop any entry whose id is a lamp, keep separators as markers,
-// then clean up: no leading separator, no trailing separator, no two adjacent
-// separators. The result is a 1:1 map of what the menu will contain.
 function buildMenuEntries() {
   const filtered = PRESETS.filter(p => p.separator || !LAMP_IDS.has(p.id));
 
@@ -306,15 +289,12 @@ let state;
 function initState() {
   const initialId = LAMP_PRESETS[0].id;
   state = {
-    connections: [],
     dimmed: new Set(),
     effectsByActor: new WeakMap(),
     appliedVersionByActor: new WeakMap(),
-    lastSoloWindow: null,
 
     selectionId: initialId,
     planVersion: 0,
-    lampIndex: 0,
 
     pending: null,
     flushId: 0,
@@ -330,12 +310,13 @@ function setSelection(id) {
 }
 
 // ===== flush buffer =====
+// Coalesces bursts of signals into one idle callback.
+//   reevaluate — re-pick the focus target, then refresh
+//   refresh    — only refresh dimming and border
 function scheduleFlush(work) {
   if (!state) return;
   const p = (state.pending ??= {});
   if (work.reevaluate) p.reevaluate = true;
-  if (work.restoreMinimized) p.restoreMinimized = true;
-  if (work.justMinimizedWindow) p.justMinimizedWindow = work.justMinimizedWindow;
   if (work.refresh) p.refresh = true;
 
   if (state.flushId) return;
@@ -351,10 +332,10 @@ function scheduleFlush(work) {
 
 function flushPending() {
   if (!state || !state.pending) return;
-  const { reevaluate, restoreMinimized, justMinimizedWindow, refresh } = state.pending;
+  const { reevaluate, refresh } = state.pending;
   state.pending = null;
   if (reevaluate)
-    ensureFocusedWindow(!!restoreMinimized, justMinimizedWindow ?? null);
+    ensureFocusedWindow();
   else if (refresh)
     refreshState();
 }
@@ -422,7 +403,6 @@ function isCoveredFullyOrPartially(window) {
 }
 
 // ===== effect application =====
-
 function applyDimEffects(actor) {
   if (!state) return;
 
@@ -564,45 +544,12 @@ function borderRemoveIfMatches(actor) { focusedBorder.removeIfActorMatches(actor
 function borderDestroy() { focusedBorder.destroy(); }
 
 // ===== focus policy =====
-function ensureFocusedWindow(restoreMinimized = false, justMinimizedWindow = null) {
-  const allWindows = windowsOnCurrentWorkspace();
-  if (allWindows.length === 0) {
-    state.lastSoloWindow = null;
-    refreshState();
-    return;
-  }
-  const visible = allWindows.filter(w => !w.minimized);
-
-  if (allWindows.length === 1) {
-    const win = allWindows[0];
-    const isNewSoloState = state.lastSoloWindow !== win;
-    state.lastSoloWindow = win;
-    if (win.minimized && !restoreMinimized) { refreshState(); return; }
-    if (win.minimized) win.unminimize();
-    const wasMaximized = win.get_maximized() === Meta.MaximizeFlags.BOTH;
-    const shouldForceMaximize = isNewSoloState || restoreMinimized;
-    if (!wasMaximized && shouldForceMaximize) win.maximize(3);
-    win.get_workspace().activate_with_focus(win, global.get_current_time());
-    refreshState();
-    return;
-  }
-
-  state.lastSoloWindow = null;
-
-  if (visible.length === 0 && allWindows.length === 2) {
-    if (!justMinimizedWindow && !restoreMinimized) { refreshState(); return; }
-    const other = justMinimizedWindow
-      ? allWindows.find(w => w !== justMinimizedWindow)
-      : allWindows.reduce((a, b) => a.get_user_time() > b.get_user_time() ? a : b);
-    if (!other) return;
-    other.unminimize();
-    other.maximize(3);
-    other.get_workspace().activate_with_focus(other, global.get_current_time());
-    refreshState();
-    return;
-  }
-
+// Picks which window should have focus and activates it. It never changes
+// window geometry or minimized state; that is the layout code's job.
+function ensureFocusedWindow() {
+  const visible = windowsOnCurrentWorkspace().filter(w => !w.minimized);
   if (visible.length === 0) { refreshState(); return; }
+
   const uncovered = visible.filter(w => !isCoveredFullyOrPartially(w));
   if (uncovered.length === 0) { refreshState(); return; }
 
@@ -703,7 +650,7 @@ class DimLevelIndicator extends PanelMenu.Button {
     this._onSelect(id);
   }
 
-  // New helper to load custom SVG files from the extension's icons/ folder
+  // Load custom SVG files from the extension's icons/ folder
   _loadIconFile(filename) {
     const iconPath = GLib.build_filenamev([this._extensionPath, 'icons', filename]);
     const file = Gio.File.new_for_path(iconPath);
@@ -718,23 +665,19 @@ class DimLevelIndicator extends PanelMenu.Button {
   }
 
   _syncIcon() {
-    // 1. Remove all existing lamp classes (including lamp-level-4)
     for (const slot of LAMP_PRESETS)
       this._iconBin.remove_style_class_name(slot.cssClass);
     this._iconBin.remove_style_class_name('lamp-level-4');
 
-    // 2. If _lampIndex is -1, the selection came from the menu.
-    //    Use the default icon and apply the lamp-level-4 class.
+    // _lampIndex === -1 means the selection came from the menu.
     if (this._lampIndex === -1) {
       this._loadIconFile(DEFAULT_ICON);
       this._iconBin.add_style_class_name('lamp-level-4');
       return;
     }
 
-    // 3. Otherwise, use the icon from the LAMP_PRESETS cycle
     const slot = LAMP_PRESETS[this._lampIndex];
     if (!slot) {
-      // Fallback just in case
       this._loadIconFile(DEFAULT_ICON);
       this._iconBin.add_style_class_name('lamp-level-4');
       return;
@@ -789,19 +732,21 @@ export default class FocusedWindowManagerExtension extends Extension {
 
   // ---- signal handlers ----
   onFocusWindowChanged() { scheduleFlush({ refresh: true }); }
-  onWorkspaceChanged() { scheduleFlush({ reevaluate: true, restoreMinimized: true }); }
+  onWorkspaceChanged() { scheduleFlush({ reevaluate: true }); }
   onWindowCreated() { scheduleFlush({ reevaluate: true }); }
 
   onWindowDestroyed(wm, actor) {
+    if (!state) return;
     borderRemoveIfMatches(actor);
     state.dimmed.delete(actor);
     scheduleFlush({ reevaluate: true });
   }
 
   onWindowMinimized(wm, actor) {
+    if (!state) return;
     borderRemoveIfMatches(actor);
     state.dimmed.delete(actor);
-    scheduleFlush({ reevaluate: true, justMinimizedWindow: actor.get_meta_window() });
+    scheduleFlush({ reevaluate: true });
   }
 
   onWindowUnminimized() { scheduleFlush({ reevaluate: true }); }
